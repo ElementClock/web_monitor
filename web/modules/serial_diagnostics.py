@@ -13,6 +13,22 @@ import traceback
 logger = logging.getLogger(__name__)
 
 
+def _active_reader_ports():
+    """获取当前正被监控使用的串口集合（无管理器时返回空集）。
+
+    延迟导入 monitor_manager 的模块级单例，避免循环导入；
+    找不到管理器或读取失败时静默返回空集（诊断照常进行）。
+    """
+    try:
+        from .monitor_manager import wind_monitor_manager
+        if wind_monitor_manager is None:
+            return set()
+        with wind_monitor_manager.data_lock:
+            return set(wind_monitor_manager.readers.keys())
+    except Exception:
+        return set()
+
+
 class SerialDiagnostics:
     """串口诊断类"""
     
@@ -34,7 +50,17 @@ class SerialDiagnostics:
             'issues': [],
             'recommendations': []
         }
-        
+
+        # P2-9: 若端口正被活动 reader 监控，直接返回 in_use，避免与监控中的
+        # 串口冲突（同时 open 同一端口会抛 PermissionError，且会打断数据流）。
+        active_ports = _active_reader_ports()
+        if port in active_ports:
+            logger.warning(f"端口 {port} 正在被监控使用，跳过诊断")
+            diagnosis_result['in_use'] = True
+            diagnosis_result['connection_status'] = True
+            diagnosis_result['message'] = "该端口正在被监控使用，诊断已跳过"
+            return diagnosis_result
+
         try:
             # 1. 基础连接测试
             logger.info(f"开始诊断端口 {port}")

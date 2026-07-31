@@ -228,6 +228,8 @@ def test_combined_fragmented():
 
 
 if __name__ == "__main__":
+    # Windows 控制台默认 GBK，强制 UTF-8 输出以支持 ✓ 等字符
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     logging.basicConfig(level=logging.ERROR)
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0

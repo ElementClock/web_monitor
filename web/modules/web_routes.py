@@ -23,7 +23,48 @@ class WebRoutes:
 
     def _setup_routes(self):
         """设置Flask路由"""
-        
+
+        # P2-5: Web 安全加固——同源收紧 + Origin/Referer/Host 校验
+        # 服务器绑定 127.0.0.1，但此前 CORS 为 *，任意网页可跨域触发
+        # /api/exit（杀进程）、/api/cleanup（删数据）、/api/send_command
+        # （向串口写任意命令）。以下全局过滤器阻止跨站请求（CSRF）与
+        # DNS rebinding：带 Origin/Referer 的请求必须来自本机页面，
+        # 无浏览器头的请求（本机工具/测试）在 Host 合法时放行。
+        # 端口在 start_server 时更新，故在请求时动态计算允许列表。
+
+        @self.app.before_request
+        def check_origin():
+            from urllib.parse import urlparse
+            port = self.manager.web_port
+            allowed_hosts = {
+                f'127.0.0.1:{port}',
+                f'localhost:{port}',
+                '127.0.0.1',
+                'localhost',
+            }
+            allowed_origins = {
+                f'http://127.0.0.1:{port}',
+                f'http://localhost:{port}',
+            }
+            host = request.headers.get('Host', '')
+            # 防 DNS rebinding：Host 必须是本机地址
+            if host not in allowed_hosts:
+                logger.warning(f"拒绝非法 Host 请求: {host}，路径: {request.path}")
+                return jsonify({'success': False, 'message': '非法请求来源'}), 403
+
+            origin = request.headers.get('Origin')
+            referer = request.headers.get('Referer')
+            if origin is None and referer is None:
+                return None  # 非浏览器请求，Host 校验已通过，放行
+
+            source = origin or referer
+            parsed = urlparse(source)
+            candidate = f'http://{parsed.netloc}' if parsed.scheme in ('http', 'https') else source
+            if candidate not in allowed_origins:
+                logger.warning(f"拒绝跨源请求: {source}，路径: {request.path}")
+                return jsonify({'success': False, 'message': '非法请求来源'}), 403
+            return None
+
         @self.app.route('/')
         def index():
             return render_template('index.html')
@@ -36,11 +77,14 @@ class WebRoutes:
         @self.app.route('/api/data/latest')
         def get_latest_data():
             latest_data = {}
+            # P2-3: 锁内仅快照 readers，锁外查询（get_latest_data 含序列化，
+            # 不应持 data_lock）
             with self.manager.data_lock:
-                for port, reader in self.manager.readers.items():
-                    data = reader.get_latest_data()
-                    if data:
-                        latest_data[port] = data
+                items = list(self.manager.readers.items())
+            for port, reader in items:
+                data = reader.get_latest_data()
+                if data:
+                    latest_data[port] = data
             return jsonify(latest_data)
         
         @self.app.route('/api/add_port', methods=['POST'])

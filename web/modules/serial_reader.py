@@ -42,12 +42,16 @@ class SerialWindDataReader:
         self.parser = DataParser(port)
         self.storage = DataStorage(port)
         self.is_running = False
-        self.lock = threading.RLock()  # 使用可重入锁
+        # P2-3: 统一停止信号：disconnect 置位后各线程的 wait() 立即返回
+        self.stop_event = threading.Event()
+        self._disconnected = False  # P2-13: disconnect 幂等守卫
         self.reconnect_delay = 5  # 重连延迟(秒)
         self.command_interval = 1  # 命令发送间隔(秒)，改为每秒发送一次
         self.last_command_time = 0  # 上次发送命令的时间
         self.custom_name = ""  # 端口自定义名称
         self.command_timer_thread = None  # 命令发送定时器线程
+        self._read_thread = None  # 数据读取线程（单线程模型，不随重连重启）
+        self._reconnect_thread = None  # 重连线程
         self.on_data_callback = on_data_callback  # 数据回调函数
         self.data_buffer = ""  # 帧缓冲区，用于拼接跨次读取的#...#帧数据
         self._buffer_lock = threading.Lock()  # 帧缓冲区线程安全锁
@@ -73,13 +77,38 @@ class SerialWindDataReader:
         return result
     
     def disconnect(self):
-        """断开串口连接"""
+        """断开串口连接（幂等，可安全重复调用/与 remove_reader 并发）
+
+        P2-3: 置位 stop_event 后按顺序 join 各线程，再关闭文件与串口。
+        顺序：命令定时器 → 读取线程 → 重连线程。read 线程最慢 1s 一轮、
+        command 线程最慢 0.1s 一轮、reconnect 可能正卡在 connect() 上，
+        因此 reconnect 最后 join 且超时后继续收尾（daemon 兜底）。
+        注意：不要在此把内存 deque 重写进文件——每帧解析时已实时落盘，
+        重写会造成重复行；deque 仅服务内存查询。
+        """
+        if self._disconnected:
+            logger.info(f"端口 {self.port} 已断开，忽略重复断开请求")
+            return
+        self._disconnected = True  # P2-13: 置位幂等守卫，防二次清理
         logger.info(f"开始断开端口 {self.port} 连接")
         self.is_running = False
+        self.stop_event.set()
+
         # 等待命令定时器线程结束
         if self.command_timer_thread and self.command_timer_thread.is_alive():
             logger.info(f"等待端口 {self.port} 命令定时器线程结束")
             self.command_timer_thread.join(timeout=2)  # 等待最多2秒
+
+        # 等待读取线程结束（确保最后几帧已写入文件，避免"写已关文件"丢帧）
+        if self._read_thread and self._read_thread.is_alive():
+            logger.info(f"等待端口 {self.port} 读取线程结束")
+            self._read_thread.join(timeout=2)
+
+        # 等待重连线程结束（可能卡在 connect()，超时后由 daemon 兜底）
+        if self._reconnect_thread and self._reconnect_thread.is_alive():
+            logger.info(f"等待端口 {self.port} 重连线程结束")
+            self._reconnect_thread.join(timeout=2)
+
         # 保存剩余数据并关闭文件
         self.storage.save_and_close_data_file()
         self.communicator.disconnect()
@@ -115,7 +144,7 @@ class SerialWindDataReader:
         """
         logger.info(f"端口 {self.port} 命令发送定时器循环开始")
         backoff = self.command_interval
-        while self.is_running:
+        while self.is_running and not self.stop_event.is_set():
             try:
                 current_time = time.time()
                 # 检查是否到了发送命令的时间
@@ -133,43 +162,60 @@ class SerialWindDataReader:
                         backoff = self.command_interval
                         logger.debug(f"端口 {self.port} 未连接，跳过本次命令发送")
 
-                # 短暂休眠以减少CPU占用
-                time.sleep(0.1)
+                # P2-3: 用 stop_event.wait 替代 sleep，disconnect 时立即返回
+                self.stop_event.wait(0.1)
 
             except Exception as e:
                 logger.error(f"端口 {self.port} 命令定时器循环出现异常: {e}")
                 logger.error(f"详细错误信息: {traceback.format_exc()}")
-                time.sleep(self.command_interval)
+                self.stop_event.wait(self.command_interval)
 
         logger.info(f"端口 {self.port} 命令发送定时器循环结束")
     
     def start_reading(self):
-        """开始读取数据"""
+        """开始读取数据（幂等：已运行则直接返回）"""
+        if self.is_running:
+            logger.info(f"端口 {self.port} 已在读取中，忽略重复启动")
+            return
         logger.info(f"开始读取端口 {self.port} 数据")
         # 初始化数据文件
         self._initialize_data_file()
-        
+
         # 启动读取和重连线程
+        self.stop_event.clear()
         self.is_running = True
-        
+
+        # P2-3: 单线程模型——三个线程一次性启动且只在 disconnect 时停止。
+        # 重连循环不再重启读取线程，避免短暂双读线程竞态。
         # 先启动重连线程（负责首次连接及后续重连）
-        reconnect_thread = threading.Thread(target=self._reconnect_loop, daemon=True, name=f"ReconnectThread-{self.port}")
-        reconnect_thread.start()
+        self._reconnect_thread = threading.Thread(target=self._reconnect_loop, daemon=True, name=f"ReconnectThread-{self.port}")
+        self._reconnect_thread.start()
         logger.info(f"端口 {self.port} 重连线程已启动")
-        
+
         # 启动命令发送定时器线程（独立于数据读取）
         self.command_timer_thread = threading.Thread(target=self._command_timer_loop, daemon=True, name=f"CommandTimerThread-{self.port}")
         self.command_timer_thread.start()
         logger.info(f"端口 {self.port} 命令发送定时器线程已启动")
+
+        # 启动数据读取线程
+        self._read_thread = threading.Thread(target=self._read_loop, daemon=True, name=f"ReadThread-{self.port}")
+        self._read_thread.start()
+        logger.info(f"端口 {self.port} 读取线程已启动")
     
     def _reconnect_loop(self):
-        """重连循环，连接失败时指数退避（5s→30s），成功后恢复初始间隔"""
+        """重连循环，连接失败时指数退避（5s→30s），成功后恢复初始间隔
+
+        P2-3: 单线程模型——只负责建立/恢复串口连接，不再启动读取线程
+        （读取线程在 start_reading 时一次性启动）。连接成功后可尝试
+        复活异常退出的读取线程，但绝不同时存在两个。
+        """
         logger.info(f"端口 {self.port} 重连循环开始")
-        read_thread = None
-        first_attempt = True  # 首次进入时立即尝试连接，不等待
         current_backoff = self.reconnect_delay
-        while self.is_running:
+        while self.is_running and not self.stop_event.is_set():
             try:
+                # 停止信号：disconnect 已置位，退出
+                if self.stop_event.is_set():
+                    break
                 # 检查是否已经连接
                 if not self.communicator.get_port_status():
                     logger.info(f"端口 {self.port} 未连接，尝试重连")
@@ -177,37 +223,32 @@ class SerialWindDataReader:
                         # 连接成功，发送初始化命令
                         self.send_command()
                         current_backoff = self.reconnect_delay  # 重置退避
-                        # 启动读取线程 - P1-1: 先等待旧线程退出再启动新线程，避免多线程竞争
-                        if read_thread is not None and read_thread.is_alive():
-                            logger.warning(f"端口 {self.port} 检测到旧的读取线程仍在运行，等待其退出")
-                            read_thread.join(timeout=3)
-                        read_thread = threading.Thread(target=self._read_loop, daemon=True, name=f"ReadThread-{self.port}")
-                        read_thread.start()
-                        logger.info(f"端口 {self.port} 读取线程已启动")
+                        # P2-3: 兜底复活：读取线程异常退出时重建（若还活着则不动）
+                        if self._read_thread is None or not self._read_thread.is_alive():
+                            logger.warning(f"端口 {self.port} 读取线程已退出，重新启动")
+                            self._read_thread = threading.Thread(target=self._read_loop, daemon=True, name=f"ReadThread-{self.port}")
+                            self._read_thread.start()
+                            logger.info(f"端口 {self.port} 读取线程已重启")
                     else:
                         # 连接失败：指数退避，最多 MAX_RECONNECT_BACKOFF 秒
                         logger.info(f"端口 {self.port} 连接失败，{current_backoff}秒后重试")
-                        time.sleep(current_backoff)
+                        self.stop_event.wait(current_backoff)
                         current_backoff = min(current_backoff * 2, MAX_RECONNECT_BACKOFF)
                         continue
-                if first_attempt:
-                    first_attempt = False
-                    time.sleep(0)  # 首次尝试不等待，立即进入下一轮
-                else:
-                    time.sleep(self.reconnect_delay)
+                # P2-3: 用 stop_event.wait 替代 sleep，disconnect 时立即返回
+                self.stop_event.wait(self.reconnect_delay)
             except Exception as e:
                 logger.error(f"端口 {self.port} 重连循环出现异常: {e}")
                 logger.error(f"详细错误信息: {traceback.format_exc()}")
-                time.sleep(current_backoff)
+                self.stop_event.wait(current_backoff)
                 current_backoff = min(current_backoff * 2, MAX_RECONNECT_BACKOFF)
         logger.info(f"端口 {self.port} 重连循环结束")
     
     def _read_loop(self):
-        """数据读取循环"""
+        """数据读取循环（单线程模型：仅在 start_reading/兜底复活时启动一次）"""
         logger.info(f"端口 {self.port} 数据读取循环开始")
-        while self.is_running:
+        while self.is_running and not self.stop_event.is_set():
             try:
-                should_sleep_longer = True
                 # 使用 is_connected() 而非直接访问 serial_conn，确保锁保护
                 if self.communicator.is_connected():
                     raw_data = self.communicator.read_line()
@@ -221,19 +262,16 @@ class SerialWindDataReader:
                                 self.stats['read_chunks'] += 1
                             # 重组完整帧并处理
                             self._reassemble_frames()
-                # 根据是否有数据来决定休眠时间
-                if should_sleep_longer:
-                    time.sleep(1)  # 如果没有数据或未连接，等待更长时间
-                else:
-                    time.sleep(0.01)  # 短暂休眠避免CPU占用过高
+                # P2-3: 用 stop_event.wait 替代 sleep，disconnect 时立即返回
+                self.stop_event.wait(1)
             except serial.SerialException as e:
                 logger.error(f"串口 {self.port} 通信错误: {e}")
                 logger.error(f"详细错误信息: {traceback.format_exc()}")
-                time.sleep(self.reconnect_delay)
+                self.stop_event.wait(self.reconnect_delay)
             except Exception as e:
                 logger.error(f"读取端口 {self.port} 数据时出错: {e}")
                 logger.error(f"详细错误信息: {traceback.format_exc()}")
-                time.sleep(self.reconnect_delay)
+                self.stop_event.wait(self.reconnect_delay)
         logger.info(f"端口 {self.port} 数据读取循环结束")
 
     def _handle_frame(self, frame: str) -> bool:
@@ -256,7 +294,8 @@ class SerialWindDataReader:
                 self.on_data_callback(self.port, wind_data_obj)
             else:
                 logger.warning(f"端口 {self.port} 无数据回调，无法推送数据")
-            logger.info(f"端口 {self.port} 数据处理完成: {parsed_data}")
+            # P2-4: 降为 DEBUG——原始数据已有 DEBUG 级日志，逐帧 INFO 造成磁盘写放大
+            logger.debug(f"端口 {self.port} 数据处理完成: {parsed_data}")
             return True
         else:
             logger.warning(f"端口 {self.port} 数据解析失败: {frame}")

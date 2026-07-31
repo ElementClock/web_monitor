@@ -90,7 +90,29 @@ class DataStorage:
                 self.data_writer.writeheader()
                 self.data_file.flush()
             else:
-                # 追加模式，重新创建 writer
+                # P2-8: 追加模式，但先校验首行是否为表头。
+                # 崩溃/os._exit 可能留下"文件非空但表头缺失"的窗口；
+                # 若首行不是表头，则读取剩余数据重建文件（写表头 + 原数据）。
+                # 注意：此路径只在跨日首次打开时触发，代价可接受。
+                with codecs.open(self.data_filename, 'r', encoding='utf-8-sig') as _probe:
+                    first_line = _probe.readline()
+                header_text = ','.join(CHINESE_FIELDNAMES)
+                if first_line.strip() != header_text:
+                    logger.warning(f"端口 {self.port} 数据文件 {self.data_filename} 缺少表头，正在重建")
+                    try:
+                        with codecs.open(self.data_filename, 'r', encoding='utf-8-sig') as _old:
+                            old_content = _old.read()
+                        # 重建：先写表头，再写原有数据
+                        with codecs.open(self.data_filename, 'w', encoding='utf-8-sig') as _rebuild:
+                            _rebuild.write(header_text + '\n')
+                            _rebuild.write(old_content)
+                        # 重新以追加模式打开
+                        self.data_file.close()
+                        self.data_file = codecs.open(self.data_filename, 'a', encoding='utf-8-sig')
+                    except Exception as e:
+                        logger.error(f"端口 {self.port} 重建数据文件表头失败: {e}")
+                        logger.error(traceback.format_exc())
+
                 self.data_writer = csv.DictWriter(self.data_file, fieldnames=CHINESE_FIELDNAMES)
 
             logger.info(f"端口 {self.port} 数据文件初始化完成: {self.data_filename}")

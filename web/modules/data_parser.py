@@ -46,6 +46,40 @@ class DataParser:
                 return None
         return None
 
+    def _make_wind_data(self, wind_speed, wind_direction,
+                        temperature=None, pressure=None, humidity=None) -> Optional[WindData]:
+        """统一构造 WindData，出口处做风速范围校验。
+
+        P2-6: P1-3 的风速范围校验（0~100 m/s）此前只作用于"纯数字"分支，
+        hex/JSON/CSV/空格分隔格式的设备故障帧（如 999.9 m/s）会绕过校验。
+        现将校验前移到统一构造出口，所有格式一律生效。
+        P2-14: 额外校验有限性——float('nan') 与任何数的比较恒为 False，
+        `speed < 0 or speed > 100` 对 NaN 会整体为 False 而放行，导致
+        NaN 风速写入 CSV（nan 字符串）和 JSON（非法 JSON）。inf 虽被
+        范围校验拦截，但用 math.isfinite 一并排除更严谨。
+        """
+        if wind_speed is None:
+            return None
+        import math
+        # P1-3: 风速范围校验 (0~100 m/s)，防止异常值
+        if not math.isfinite(wind_speed) or wind_speed < 0 or wind_speed > 100:
+            logger.warning(f"端口 {self.port} 风速值异常: {wind_speed} m/s，已忽略")
+            return None
+        # 风向合理性校验：有效风向应在 0~360 度（NaN 同样会被 isfinite 拦截）
+        if wind_direction is not None:
+            if not math.isfinite(wind_direction) or wind_direction < 0 or wind_direction > 360:
+                logger.warning(f"端口 {self.port} 风向值异常: {wind_direction}°，已忽略该帧")
+                return None
+        return WindData(
+            timestamp=datetime.now().isoformat(),
+            port=self.port,
+            wind_speed=wind_speed,
+            wind_direction=wind_direction if wind_direction is not None else 0.0,
+            temperature=temperature,
+            pressure=pressure,
+            humidity=humidity
+        )
+
     def _parse_hex_wind_data(self, raw_data: str) -> Optional[WindData]:
         """
         解析十六进制格式的风速风向数据
@@ -86,15 +120,7 @@ class DataParser:
             humidity = self._safe_float_conversion(parts[5]) if len(parts) > 5 else None
 
             logger.info(f"端口 {self.port} 成功解析数据 - 风速: {wind_speed}, 风向: {wind_direction}, 温度: {temperature}, 气压: {pressure}, 湿度: {humidity}")
-            return WindData(
-                timestamp=datetime.now().isoformat(),
-                port=self.port,
-                wind_speed=wind_speed,
-                wind_direction=wind_direction if wind_direction is not None else 0.0,
-                temperature=temperature,
-                pressure=pressure,
-                humidity=humidity
-            )
+            return self._make_wind_data(wind_speed, wind_direction, temperature, pressure, humidity)
         except Exception as e:
             logger.error(f"解析端口 {self.port} 十六进制风速风向数据失败: {raw_data}, 错误: {e}")
             logger.error(f"详细错误信息: {traceback.format_exc()}")
@@ -108,14 +134,17 @@ class DataParser:
             raw_data = raw_data.strip()
             if not raw_data:
                 return False
-            # P1-2: 十六进制数据长度必须是偶数
-            if len(raw_data) % 2 != 0:
+            # P2-7: 十六进制字节长度必须为偶数，且判断应在去除空白后计算。
+            # 此前直接对含空格/换行的原始长度取模，空格分隔的 hex 帧
+            # （如 "0A 0B 0C 0D\r\n"，总长含空白为奇数）会被误判为非 hex。
+            hex_clean = raw_data.replace(' ', '')
+            if len(hex_clean) % 2 != 0:
                 return False
             # 检查是否包含典型的十六进制字符并且长度合理
             hex_chars = set('0123456789ABCDEFabcdef ')
             data_chars = set(raw_data)
             # 需要有足够的字符，并且只包含十六进制相关的字符
-            is_hex = (len(raw_data) > 10 and
+            is_hex = (len(hex_clean) > 10 and
                      data_chars.issubset(hex_chars) and
                      all(c in hex_chars for c in data_chars))
             if is_hex:
@@ -179,12 +208,7 @@ class DataParser:
                         return None
                         
                     logger.info(f"端口 {self.port} JSON格式数据解析成功 - 风速: {wind_speed}, 风向: {wind_direction}")
-                    return WindData(
-                        timestamp=datetime.now().isoformat(),
-                        port=self.port,
-                        wind_speed=wind_speed,
-                        wind_direction=wind_direction if wind_direction is not None else 0.0
-                    )
+                    return self._make_wind_data(wind_speed, wind_direction)
                 except json.JSONDecodeError as e:
                     logger.warning(f"端口 {self.port} JSON数据格式错误: {e}")
             
@@ -205,16 +229,8 @@ class DataParser:
                 humidity = self._safe_float_conversion(parts[5]) if len(parts) > 5 else None
 
                 logger.info(f"端口 {self.port} CSV格式数据解析成功 - 风速: {wind_speed}, 风向：{wind_direction}, 温度：{temperature}, 气压：{pressure}, 湿度：{humidity}")
-                return WindData(
-                    timestamp=datetime.now().isoformat(),
-                    port=self.port,
-                    wind_speed=wind_speed,
-                    wind_direction=wind_direction if wind_direction is not None else 0.0,
-                    temperature=temperature,
-                    pressure=pressure,
-                    humidity=humidity
-                )
-            
+                return self._make_wind_data(wind_speed, wind_direction, temperature, pressure, humidity)
+
             # 尝试空格分隔格式
             elif ' ' in raw_data:
                 logger.info(f"端口 {self.port} 识别为空格分隔格式数据")
@@ -242,16 +258,8 @@ class DataParser:
                 humidity = self._safe_float_conversion(parts[5]) if len(parts) > 5 else None
 
                 logger.info(f"端口 {self.port} 空格分隔格式数据解析成功 - 风速：{wind_speed}, 风向：{wind_direction}, 温度：{temperature}, 气压：{pressure}, 湿度：{humidity}")
-                return WindData(
-                    timestamp=datetime.now().isoformat(),
-                    port=self.port,
-                    wind_speed=wind_speed,
-                    wind_direction=wind_direction if wind_direction is not None else 0.0,
-                    temperature=temperature,
-                    pressure=pressure,
-                    humidity=humidity
-                )
-            
+                return self._make_wind_data(wind_speed, wind_direction, temperature, pressure, humidity)
+
             # 尝试纯数字格式
             else:
                 logger.info(f"端口 {self.port} 识别为纯数字格式数据")
@@ -260,18 +268,9 @@ class DataParser:
                     logger.warning(f"端口 {self.port} 纯数字数据中风速值无效: {raw_data}")
                     return None
 
-                # P1-3: 风速范围校验 (0~100 m/s)，防止异常值
-                if wind_speed < 0 or wind_speed > 100:
-                    logger.warning(f"端口 {self.port} 风速值异常: {wind_speed} m/s，已忽略")
-                    return None
-
+                # P2-14: 改走统一构造出口，范围 + isfinite 校验（NaN/inf 一并拦截）
                 logger.info(f"端口 {self.port} 纯数字格式数据解析成功 - 风速: {wind_speed}")
-                return WindData(
-                    timestamp=datetime.now().isoformat(),
-                    port=self.port,
-                    wind_speed=wind_speed,
-                    wind_direction=0.0  # 纯数字格式没有风向信息
-                )
+                return self._make_wind_data(wind_speed, 0.0)
                 
         except Exception as e:
             logger.error(f"解析端口 {self.port} 数据时发生未知错误: {e}")

@@ -4,9 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>风速风向实时监测系统</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
-    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <!-- P2-10: 优先本地静态资源（离线机房可用），本地缺失时回退 CDN -->
+    <script src="/static/socket.io.min.js" onerror="this.onerror=null;var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js';document.head.appendChild(s)"></script>
+    <script src="/static/chart.umd.min.js" onerror="this.onerror=null;var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js';document.head.appendChild(s)"></script>
+    <script src="/static/d3.min.js" onerror="this.onerror=null;var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js';document.head.appendChild(s)"></script>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -357,7 +358,34 @@
             console.log('重连成功，尝试次数：', attemptNumber);
             isConnected = true;
             updateConnectionStatus('connected');
+            // P2-12: 重连后回补断连期间的历史数据，避免图表留空白
+            fetchHistoryData();
         });
+
+        // 回补历史数据：拉取各端口最新数据填充图表
+        function fetchHistoryData() {
+            fetch('/api/data/latest')
+                .then(response => response.json())
+                .then(data => {
+                    Object.keys(data).forEach(port => {
+                        if (portCharts[port] && data[port]) {
+                            // 只回补最近 2 分钟内尚未显示的点，避免重复
+                            const d = data[port];
+                            const ts = new Date(d.timestamp).getTime();
+                            const points = portCharts[port].dataPoints;
+                            const lastTs = points.length > 0
+                                ? new Date(points[points.length - 1].timestamp).getTime()
+                                : 0;
+                            if (ts > lastTs && Date.now() - ts <= 2 * 60 * 1000) {
+                                updateChartData(port, d);
+                            }
+                        }
+                    });
+                })
+                .catch(error => {
+                    console.error('回补历史数据失败:', error);
+                });
+        }
 
         // 监听重连失败
         socket.on('reconnect_error', function(error) {
@@ -1157,10 +1185,15 @@
             const dataPoints = portCharts[port].dataPoints;
             const newTime = new Date(data.timestamp).getTime();
 
-            // 检测时间间隔，缺失秒用线性插值补齐（保证分钟平均准确）
+            // P2-12: 同时间戳去重——重连回补的历史数据可能与实时流重叠，
+            // 避免同一秒出现重复点
             if (dataPoints.length > 0) {
                 const lastPoint = dataPoints[dataPoints.length - 1];
                 const lastTime = new Date(lastPoint.timestamp).getTime();
+                if (newTime === lastTime) {
+                    return; // 重复时间戳，忽略
+                }
+                // 检测时间间隔，缺失秒用线性插值补齐（保证分钟平均准确）
                 const gap = (newTime - lastTime) / 1000;
 
                 if (gap > 1.5 && gap <= 30) {
@@ -1209,22 +1242,27 @@
                     const pt = new Date(point.timestamp).getTime();
                     if (now - pt > cutoffMs) return;
 
-                    // 分钟键：HH:MM
-                    const d = new Date(point.timestamp);
-                    const key = d.getHours().toString().padStart(2, '0') + ':' +
-                                d.getMinutes().toString().padStart(2, '0');
+                    // P2-11: 分钟键改用 epoch 分钟（Math.floor(pt/60000)），
+                    // 标签用 Date 格式化，排序按数值。此前用 HH:MM 字符串做键
+                    // 并字符串排序，跨午夜时 "00:00" 会被排到 "23:59" 之前，
+                    // 导致 X 轴断裂。
+                    const minKey = Math.floor(pt / 60000);
 
-                    if (!buckets[key]) buckets[key] = { sum: 0, count: 0 };
-                    buckets[key].sum += point.speed;
-                    buckets[key].count++;
-                    allKeys.add(key);
+                    if (!buckets[minKey]) buckets[minKey] = { sum: 0, count: 0 };
+                    buckets[minKey].sum += point.speed;
+                    buckets[minKey].count++;
+                    allKeys.add(minKey);
                 });
                 portBuckets[p] = buckets;
             });
 
-            // 排序分钟标签
-            const sortedKeys = Array.from(allKeys).sort();
-            windSpeedChart.data.labels = sortedKeys;
+            // 按数值排序分钟标签，并格式化为 HH:MM
+            const sortedKeys = Array.from(allKeys).sort((a, b) => a - b);
+            windSpeedChart.data.labels = sortedKeys.map(k => {
+                const d = new Date(k * 60000);
+                return d.getHours().toString().padStart(2, '0') + ':' +
+                       d.getMinutes().toString().padStart(2, '0');
+            });
 
             // 给每个数据集赋平均值
             Object.keys(portCharts).forEach(p => {

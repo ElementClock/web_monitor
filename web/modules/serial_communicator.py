@@ -100,6 +100,13 @@ class SerialCommunicator:
                     except serial.SerialTimeoutException as timeout_error:
                         logger.warning(f"端口 {self.port} 写入超时: {timeout_error}")
                         # 超时意味着数据可能未完全写入，返回False通知调用方
+                        # 软超时不视为连接失效，保留句柄供下次重试
+                        return False
+                    except (serial.SerialException, OSError) as write_error:
+                        # P2-1: 硬性串口错误（设备移除/损坏）——关闭失效句柄，触发重连
+                        logger.error(f"端口 {self.port} 写入命令失败，关闭失效连接: {write_error}")
+                        logger.error(f"详细错误信息: {traceback.format_exc()}")
+                        self._invalidate_connection(reason=str(write_error))
                         return False
                     except Exception as write_error:
                         logger.error(f"端口 {self.port} 写入命令失败: {write_error}")
@@ -107,14 +114,36 @@ class SerialCommunicator:
                 else:
                     logger.warning(f"端口 {self.port} 未连接，无法发送命令")
                     return False
-        except serial.SerialException as e:
+        except serial.SerialTimeoutException as e:
+            logger.warning(f"串口 {self.port} 通信超时: {e}")
+            return False
+        except (serial.SerialException, OSError) as e:
+            # P2-1: 硬性串口错误——关闭失效句柄，触发重连
             logger.error(f"串口 {self.port} 通信错误，无法发送命令: {e}")
             logger.error(f"详细错误信息: {traceback.format_exc()}")
+            self._invalidate_connection(reason=str(e))
             return False
         except Exception as e:
             logger.error(f"向端口 {self.port} 发送命令时发生未知错误: {e}")
             logger.error(f"详细错误信息: {traceback.format_exc()}")
             return False
+
+    def _invalidate_connection(self, reason: str):
+        """关闭失效串口句柄，使 is_open 翻 False 以触发重连。
+
+        只在已持锁状态下调用。Windows 拔线后 is_open 不会自动变 False，
+        必须主动 close 才能让上层重连门控 get_port_status() 感知断开。
+        """
+        try:
+            if self.serial_conn is not None:
+                try:
+                    self.serial_conn.close()
+                except Exception:
+                    pass
+                self.serial_conn = None
+                logger.warning(f"端口 {self.port} 连接已失效并关闭: {reason}")
+        except Exception as e:
+            logger.error(f"端口 {self.port} 关闭失效连接出错: {e}")
 
     def read_line(self) -> Optional[str]:
         """从串口读取原始字节数据
@@ -144,9 +173,15 @@ class SerialCommunicator:
 
                 logger.debug(f"从端口 {self.port} 读取到原始数据: {decoded!r}")
                 return decoded
-        except serial.SerialException as e:
-            logger.error(f"串口 {self.port} 通信错误: {e}")
+        except serial.SerialTimeoutException as e:
+            # 软超时：设备只是暂时无响应，不影响连接状态
+            logger.debug(f"串口 {self.port} 读取超时: {e}")
+            return None
+        except (serial.SerialException, OSError) as e:
+            # P2-1: 硬性串口错误（设备移除/损坏）——关闭失效句柄，触发重连
+            logger.error(f"串口 {self.port} 通信错误，关闭失效连接: {e}")
             logger.error(f"详细错误信息: {traceback.format_exc()}")
+            self._invalidate_connection(reason=str(e))
             return None
         except Exception as e:
             logger.error(f"读取端口 {self.port} 数据时发生未知错误: {e}")
@@ -173,21 +208,25 @@ class SerialCommunicator:
                 if self.serial_conn.in_waiting > 0:
                     return True
 
-                # 尝试写入一个字节测试连接（静默操作，不影响正常通信）
-                # 使用最低波特率测试，写入时间很短
-                test_byte = b'\x00'
+                # P2-2: 不再向设备写入探测字节（0x00 可能被气象设备解释为
+                # 命令/唤醒字节，污染数据线）。改用带短超时的非阻塞读，
+                # 若底层句柄已失效，read 会抛硬错误并由 _invalidate_connection
+                # 关闭句柄，使上层感知断开。
                 old_timeout = self.serial_conn.timeout
-                self.serial_conn.timeout = 0.1  # 短超时
+                self.serial_conn.timeout = 0.05  # 短超时，仅试探连接活性
                 try:
-                    # 只尝试写入，不等待响应
-                    self.serial_conn.write(test_byte)
-                    return True
-                except:
-                    pass
+                    self.serial_conn.read(0)
+                except serial.SerialTimeoutException:
+                    pass  # 软超时 = 连接存活但无数据
                 finally:
                     self.serial_conn.timeout = old_timeout
 
                 return True
+            except (serial.SerialException, OSError) as e:
+                # 句柄已失效：关闭以触发重连
+                logger.warning(f"端口 {self.port} 深度检测发现连接失效: {e}")
+                self._invalidate_connection(reason=str(e))
+                return False
             except Exception:
                 return False
 

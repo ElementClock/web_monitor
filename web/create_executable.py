@@ -45,6 +45,8 @@ a = Analysis(
         ('templates', 'templates'),
         # 包含modules目录 - 确保路径存在
         ('modules', 'modules'),
+        # P2-10: 包含本地前端静态库（离线可用，CDN兜底）
+        ('static', 'static'),
         # P1-11: 包含串口配置文件，打包后用户配置可保留
         ('serial_configs.json', '.'),
     ],
@@ -142,6 +144,7 @@ def run_pyinstaller():
                 "--name=WindSpeedMonitor",
                 "--add-data=templates;templates",
                 "--add-data=modules;modules",
+                "--add-data=static;static",
                 "--hidden-import=engineio.async_drivers.threading",
                 "--hidden-import=markupsafe",
                 "--hidden-import=jinja2.ext",
