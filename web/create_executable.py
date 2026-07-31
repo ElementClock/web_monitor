@@ -61,6 +61,8 @@ a = Analysis(
         'flask_socketio',
         'socketio',
         'engineio',
+        'simple_websocket',
+        'wsproto',
     ],
     hookspath=[],
     hooksconfig={},
@@ -151,6 +153,8 @@ def run_pyinstaller():
                 "--hidden-import=flask_socketio",
                 "--hidden-import=socketio",
                 "--hidden-import=engineio",
+                "--hidden-import=simple_websocket",
+                "--hidden-import=wsproto",
                 "--console",
                 "--clean"
             ], check=True)
