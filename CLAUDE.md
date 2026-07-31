@@ -11,7 +11,7 @@ The app is typically run packaged (PyInstaller → `dist/WindSpeedMonitor/`) but
 ## Commands
 
 - **Run the app**: `run.bat` (from repo root) — sets UTF-8 codepage, `cd`s to `web/`, runs `..\venv\Scripts\python realtime_wind_monitor.py`. A virtualenv named `venv/` is expected next to `web/` (not currently present). Equivalent: `cd web && python realtime_wind_monitor.py`.
-- **Install dependencies**: `pip install -r web/requirements.txt` (pinned: Flask 2.3.2, Flask-SocketIO 5.3.4, pyserial 3.5, python-socketio 5.7.2).
+- **Install dependencies**: `pip install -r web/requirements.txt` (pinned: Flask 2.3.2, Flask-SocketIO 5.3.4, pyserial 3.5, python-socketio 5.7.2, simple-websocket 1.1.0). `simple-websocket` provides the actual WebSocket transport for Socket.IO's threading mode — without it the server falls back to HTTP polling with a startup warning.
 - **Package to exe** (from `web/`): `python create_executable.py` — installs PyInstaller, generates `wind_monitor_new.spec` if missing, builds to `dist/WindSpeedMonitor/`. Alternative one-shot command is in `打包命令.txt` (`python -m PyInstaller wind_monitor_new.spec --clean`). Note: the generated spec `wind_monitor_new.spec` is the current one; the checked-in `WindSpeedMonitor.spec` is older (missing `serial_configs.json` data and some hidden imports) and is superseded.
 - **Tests / lint**: none exist — no test suite, no linter config. Verification is manual: run the app, connect a serial port, confirm data flows to the dashboard and CSV.
 
