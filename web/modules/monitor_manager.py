@@ -142,7 +142,8 @@ class WindMonitorManager:
                             'connected': reader.communicator.is_connected(),
                             'running': reader.is_running,
                             'data_count': len(reader.storage.data_buffer),
-                            'latest_data': reader.get_latest_data()
+                            'latest_data': reader.get_latest_data(),
+                            'robustness_stats': reader.get_stats()
                         }
                     except Exception as e:
                         logger.error(f"获取端口 {port} 状态时发生错误: {e}")

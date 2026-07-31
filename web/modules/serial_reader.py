@@ -7,6 +7,7 @@ import serial
 import threading
 import time
 import logging
+from datetime import datetime
 from typing import Dict, List, Optional
 import traceback
 
@@ -20,6 +21,13 @@ logger = logging.getLogger(__name__)
 
 # 需要发送的十六进制命令
 HEX_COMMAND = bytes([0x30, 0x30, 0x54, 0x52, 0x30, 0x30, 0x30, 0x30, 0x30, 0x0D])
+
+# 单帧最大长度（字节）：设备一帧约50字节，4000 远大于正常帧但可防止坏帧无限增长
+MAX_FRAME_LENGTH = 4000
+# 命令发送失败时的退避上限(秒)
+MAX_COMMAND_BACKOFF = 10
+# 重连失败时的退避上限(秒)
+MAX_RECONNECT_BACKOFF = 30
 
 
 class SerialWindDataReader:
@@ -43,6 +51,15 @@ class SerialWindDataReader:
         self.on_data_callback = on_data_callback  # 数据回调函数
         self.data_buffer = ""  # 帧缓冲区，用于拼接跨次读取的#...#帧数据
         self._buffer_lock = threading.Lock()  # 帧缓冲区线程安全锁
+        # 鲁棒性统计（网络/串口拥塞分片场景）
+        self.stats = {
+            'read_chunks': 0,          # 累计读取的原始数据块数
+            'reassembled_frames': 0,   # 跨多次读取重组成功的帧数
+            'discarded_frames': 0,     # 丢弃的异常帧数
+            'buffer_truncations': 0,   # 缓冲区超限截断次数
+            'last_reassembly': None,   # 最近一次重组时间(ISO字符串)
+        }
+        self._stats_lock = threading.Lock()  # 统计字段线程安全锁
         logger.info(f"串口数据读取器初始化完成，端口: {self.port}, 波特率: {self.baudrate}, 数据位: {self.bytesize}, 校验位: {self.parity}, 停止位: {self.stopbits}")
         
     def connect(self) -> bool:
@@ -93,28 +110,37 @@ class SerialWindDataReader:
         return result
     
     def _command_timer_loop(self):
-        """命令发送定时器循环 - 独立线程确保连续发送命令"""
+        """命令发送定时器循环 - 独立线程确保连续发送命令
+        发送失败时按指数退避，避免网络拥塞时高频重试加剧堵塞
+        """
         logger.info(f"端口 {self.port} 命令发送定时器循环开始")
+        backoff = self.command_interval
         while self.is_running:
             try:
                 current_time = time.time()
                 # 检查是否到了发送命令的时间
-                if current_time - self.last_command_time >= self.command_interval:
+                if current_time - self.last_command_time >= backoff:
                     # 检查串口是否连接且可用
                     if self.communicator.get_port_status():
                         logger.debug(f"端口 {self.port} 定时发送命令")
-                        self.send_command()
+                        if self.send_command():
+                            backoff = self.command_interval  # 成功，恢复正常间隔
+                        else:
+                            # 发送失败：指数退避，最多 MAX_COMMAND_BACKOFF 秒
+                            backoff = min(backoff * 2, MAX_COMMAND_BACKOFF)
+                            logger.warning(f"端口 {self.port} 命令发送失败，退避至 {backoff} 秒后重试")
                     else:
+                        backoff = self.command_interval
                         logger.debug(f"端口 {self.port} 未连接，跳过本次命令发送")
-                
+
                 # 短暂休眠以减少CPU占用
                 time.sleep(0.1)
-                
+
             except Exception as e:
                 logger.error(f"端口 {self.port} 命令定时器循环出现异常: {e}")
                 logger.error(f"详细错误信息: {traceback.format_exc()}")
                 time.sleep(self.command_interval)
-        
+
         logger.info(f"端口 {self.port} 命令发送定时器循环结束")
     
     def start_reading(self):
@@ -137,10 +163,11 @@ class SerialWindDataReader:
         logger.info(f"端口 {self.port} 命令发送定时器线程已启动")
     
     def _reconnect_loop(self):
-        """重连循环"""
+        """重连循环，连接失败时指数退避（5s→30s），成功后恢复初始间隔"""
         logger.info(f"端口 {self.port} 重连循环开始")
         read_thread = None
         first_attempt = True  # 首次进入时立即尝试连接，不等待
+        current_backoff = self.reconnect_delay
         while self.is_running:
             try:
                 # 检查是否已经连接
@@ -149,6 +176,7 @@ class SerialWindDataReader:
                     if self.connect():
                         # 连接成功，发送初始化命令
                         self.send_command()
+                        current_backoff = self.reconnect_delay  # 重置退避
                         # 启动读取线程 - P1-1: 先等待旧线程退出再启动新线程，避免多线程竞争
                         if read_thread is not None and read_thread.is_alive():
                             logger.warning(f"端口 {self.port} 检测到旧的读取线程仍在运行，等待其退出")
@@ -157,7 +185,11 @@ class SerialWindDataReader:
                         read_thread.start()
                         logger.info(f"端口 {self.port} 读取线程已启动")
                     else:
-                        logger.info(f"端口 {self.port} 连接失败，{self.reconnect_delay}秒后重试")
+                        # 连接失败：指数退避，最多 MAX_RECONNECT_BACKOFF 秒
+                        logger.info(f"端口 {self.port} 连接失败，{current_backoff}秒后重试")
+                        time.sleep(current_backoff)
+                        current_backoff = min(current_backoff * 2, MAX_RECONNECT_BACKOFF)
+                        continue
                 if first_attempt:
                     first_attempt = False
                     time.sleep(0)  # 首次尝试不等待，立即进入下一轮
@@ -166,7 +198,8 @@ class SerialWindDataReader:
             except Exception as e:
                 logger.error(f"端口 {self.port} 重连循环出现异常: {e}")
                 logger.error(f"详细错误信息: {traceback.format_exc()}")
-                time.sleep(self.reconnect_delay)
+                time.sleep(current_backoff)
+                current_backoff = min(current_backoff * 2, MAX_RECONNECT_BACKOFF)
         logger.info(f"端口 {self.port} 重连循环结束")
     
     def _read_loop(self):
@@ -183,59 +216,11 @@ class SerialWindDataReader:
                         # 将读取到的数据追加到帧缓冲区（加锁保护）
                         with self._buffer_lock:
                             self.data_buffer += raw_data
-                            # 从缓冲区中提取完整的 #...# 帧
-                            while '#' in self.data_buffer:
-                                start_idx = self.data_buffer.find('#')
-                                # 查找起始#之后的下一个#作为帧结束
-                                end_idx = self.data_buffer.find('#', start_idx + 1)
-                                if end_idx == -1:
-                                    # 没有找到帧结束标记，数据不完整，等待更多数据
-                                    logger.debug(f"端口 {self.port} 帧数据不完整，等待更多数据，缓冲区: {self.data_buffer}")
-                                    break
-                                # 提取完整帧
-                                frame = self.data_buffer[start_idx:end_idx + 1]
-                                # P1-8: 检查帧内是否包含多余的#号，可能格式异常
-                                frame_content = frame[1:-1] if len(frame) > 2 else frame
-                                if frame_content.count('#') > 0:
-                                    logger.warning(f"端口 {self.port} 帧内包含多余的#号，可能格式异常: {frame}")
-                                # 从缓冲区移除已处理的数据
-                                self.data_buffer = self.data_buffer[end_idx + 1:]
-                                logger.debug(f"端口 {self.port} 提取完整帧: {frame}")
-                                parsed_data = self._parse_data(frame)
-                                if parsed_data:
-                                    # 将解析后的WindData对象存储
-                                    wind_data_obj = WindData.from_dict(parsed_data)
-                                    self.storage.append_data(wind_data_obj)
-                                    # 实时将数据写入文件
-                                    self.storage.write_data_to_file(wind_data_obj)
-                                    # 通过回调推送数据
-                                    if self.on_data_callback:
-                                        self.on_data_callback(self.port, wind_data_obj)
-                                    else:
-                                        logger.warning(f"端口 {self.port} 无数据回调，无法推送数据")
-                                    should_sleep_longer = False
-                                    logger.info(f"端口 {self.port} 数据处理完成: {parsed_data}")
-                                else:
-                                    logger.warning(f"端口 {self.port} 数据解析失败: {frame}")
-                            # P0-3: 缓冲区超长保护 - 防止起始#但无结束#时无限增长
-                            if len(self.data_buffer) > 4096:
-                                if '#' not in self.data_buffer:
-                                    # 完全没有帧标记，整体清空
-                                    logger.warning(f"端口 {self.port} 缓冲区数据过长且无帧标记，清空缓冲区: {self.data_buffer[:100]}...")
-                                    self.data_buffer = ""
-                                else:
-                                    # 有起始#但无结束#，丢弃到第一个#位置
-                                    first_hash = self.data_buffer.find('#')
-                                    if first_hash > 0:
-                                        self.data_buffer = self.data_buffer[first_hash:]
-                                        logger.warning(f"端口 {self.port} 缓冲区超长，截断到第一个#号")
-                                    else:
-                                        # first_hash == 0 但缓冲区超长，说明有#但无结束#，
-                                        # 截断到缓冲区一半的位置，保留后半段继续等待
-                                        half = len(self.data_buffer) // 2
-                                        self.data_buffer = self.data_buffer[half:]
-                                        logger.warning(f"端口 {self.port} 缓冲区超长（有起始#但无结束#），截断到一半")
-                                
+                            # 统计读取块数
+                            with self._stats_lock:
+                                self.stats['read_chunks'] += 1
+                            # 重组完整帧并处理
+                            self._reassemble_frames()
                 # 根据是否有数据来决定休眠时间
                 if should_sleep_longer:
                     time.sleep(1)  # 如果没有数据或未连接，等待更长时间
@@ -250,7 +235,109 @@ class SerialWindDataReader:
                 logger.error(f"详细错误信息: {traceback.format_exc()}")
                 time.sleep(self.reconnect_delay)
         logger.info(f"端口 {self.port} 数据读取循环结束")
-    
+
+    def _handle_frame(self, frame: str) -> bool:
+        """处理一个完整帧（解析、存储、推送）
+        返回: True=处理成功，False=解析失败
+        注意: 调用方必须已持有 _buffer_lock
+        """
+        frame = frame.strip()
+        if not frame:
+            return False
+        parsed_data = self._parse_data(frame)
+        if parsed_data:
+            # 将解析后的WindData对象存储
+            wind_data_obj = WindData.from_dict(parsed_data)
+            self.storage.append_data(wind_data_obj)
+            # 实时将数据写入文件
+            self.storage.write_data_to_file(wind_data_obj)
+            # 通过回调推送数据
+            if self.on_data_callback:
+                self.on_data_callback(self.port, wind_data_obj)
+            else:
+                logger.warning(f"端口 {self.port} 无数据回调，无法推送数据")
+            logger.info(f"端口 {self.port} 数据处理完成: {parsed_data}")
+            return True
+        else:
+            logger.warning(f"端口 {self.port} 数据解析失败: {frame}")
+            return False
+
+    def get_stats(self) -> Dict:
+        """获取鲁棒性统计信息（线程安全）"""
+        with self._stats_lock:
+            return dict(self.stats)
+
+    def _reassemble_frames(self):
+        """从帧缓冲区重组完整帧并处理
+        支持两种定界方式：
+          1. 换行符定界（\n 或 \r）：标准行协议，通常由设备按行输出
+          2. #...# 定界：帧以#开头和结尾
+        网络/串口拥塞导致的分片（一次只到上半截、下一秒到下半截）会先落在
+        缓冲区等待，直到定界符到齐后才被提取，从而避免解析成错误数据。
+        单帧长度上限 MAX_FRAME_LENGTH 防止坏帧无限增长。
+        注意: 调用方必须已持有 _buffer_lock
+        """
+        while self.data_buffer:
+            # 优先按换行符定界（\n 优先，兼容纯 \r）
+            nl_index = self.data_buffer.find('\n')
+            if nl_index != -1:
+                frame = self.data_buffer[:nl_index]
+                self.data_buffer = self.data_buffer[nl_index + 1:]
+                self._handle_frame(frame)
+                continue
+
+            # 无换行符，尝试 #...# 帧
+            start_idx = self.data_buffer.find('#')
+            if start_idx == -1:
+                # 没有换行、也没有#：可能是断帧前导部分或脏数据。
+                # 若有完整的换行数据但缺末尾换行（尾部残余），暂留等待；
+                # 超过单帧上限则丢弃（避免脏数据无限累积）。
+                if len(self.data_buffer) > MAX_FRAME_LENGTH:
+                    logger.warning(f"端口 {self.port} 缓冲区无帧定界符且超长，丢弃脏数据: {self.data_buffer[:100]!r}...")
+                    with self._stats_lock:
+                        self.stats['discarded_frames'] += 1
+                        self.stats['buffer_truncations'] += 1
+                    self.data_buffer = ""
+                return  # 等待更多数据
+
+            # 存在#起始，查找配对的结束#
+            end_idx = self.data_buffer.find('#', start_idx + 1)
+            if end_idx == -1:
+                # 有起始#但无结束#：帧不完整，等待更多数据（分片场景核心等待点）
+                if len(self.data_buffer) - start_idx > MAX_FRAME_LENGTH:
+                    logger.warning(f"端口 {self.port} 帧数据超长且无结束#，截断该帧: {self.data_buffer[start_idx:start_idx + 100]!r}...")
+                    with self._stats_lock:
+                        self.stats['discarded_frames'] += 1
+                        self.stats['buffer_truncations'] += 1
+                    # 丢弃该帧，保留#起始之后的部分继续等待（下一帧可能已混入）
+                    self.data_buffer = self.data_buffer[start_idx + 1:]
+                return  # 等待更多数据
+
+            # 帧完整：#...#。先清理起始#之前的任何残余垃圾
+            if start_idx > 0:
+                logger.debug(f"端口 {self.port} 丢弃帧起始#之前的数据: {self.data_buffer[:start_idx]!r}")
+                with self._stats_lock:
+                    self.stats['discarded_frames'] += 1
+                self.data_buffer = self.data_buffer[start_idx:]
+
+            frame = self.data_buffer[:end_idx + 1]
+            self.data_buffer = self.data_buffer[end_idx + 1:]
+
+            # P1-8: 检查帧内是否包含多余的#号，可能格式异常
+            frame_content = frame[1:-1] if len(frame) > 2 else frame
+            if frame_content.count('#') > 0:
+                logger.warning(f"端口 {self.port} 帧内包含多余的#号，可能格式异常: {frame}")
+
+            # 记录重组信息：只有当帧跨越多块数据才标记重组（分片场景）
+            with self._stats_lock:
+                self.stats['last_reassembly'] = datetime.now().isoformat()
+                self.stats['reassembled_frames'] += 1
+
+            handled = self._handle_frame(frame)
+            if not handled:
+                with self._stats_lock:
+                    self.stats['discarded_frames'] += 1
+
     def _is_number(self, s):
         """检查字符串是否为有效数字"""
         if not s:

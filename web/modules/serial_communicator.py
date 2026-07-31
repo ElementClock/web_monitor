@@ -117,7 +117,9 @@ class SerialCommunicator:
             return False
 
     def read_line(self) -> Optional[str]:
-        """从串口读取一行数据，支持 #...# 帧格式"""
+        """从串口读取原始字节数据
+        保留原始数据（含换行符），由上层按帧定界符(换行/#)重组
+        """
         try:
             with self.lock:
                 if not self.serial_conn or not self.serial_conn.is_open:
@@ -133,14 +135,14 @@ class SerialCommunicator:
 
                 # 尝试解码，使用errors='ignore'容错处理非UTF-8字节
                 try:
-                    decoded = raw_bytes.decode('utf-8', errors='ignore').strip()
+                    decoded = raw_bytes.decode('utf-8', errors='ignore')
                 except Exception:
                     return None
 
                 if not decoded:
                     return None
 
-                logger.debug(f"从端口 {self.port} 读取到原始数据: {decoded}")
+                logger.debug(f"从端口 {self.port} 读取到原始数据: {decoded!r}")
                 return decoded
         except serial.SerialException as e:
             logger.error(f"串口 {self.port} 通信错误: {e}")
