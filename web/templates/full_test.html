@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>风速监控系统 - 完整数据模拟测试</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        h1 { text-align: center; color: #333; }
+        .test-container { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+        .dashboard-row { display: flex; flex-wrap: wrap; gap: 5px; }
+        .dashboard-item { flex: 1; min-width: 250px; background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); padding: 15px; }
+        .dashboard-item h2 { margin-top: 0; color: #555; border-bottom: 1px solid #eee; padding-bottom: 10px; text-align: center; }
+        .gauges-container { display: flex; justify-content: space-around; flex-wrap: wrap; gap: 15px; }
+        .gauge-container { text-align: center; flex: 1; min-width: 140px; }
+        .gauge-title { font-size: 14px; font-weight: bold; margin-bottom: 8px; color: #555; }
+        .gauge-value { font-size: 20px; font-weight: bold; margin-top: 8px; }
+        .gauge-sub { font-size: 13px; color: #666; margin-top: 5px; }
+        .large-value { font-size: 28px; font-weight: bold; margin-top: 30px; }
+        .gauge-chart { width: 160px; height: 160px; margin: 0 auto; }
+        .controls { background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); padding: 20px; }
+        .data-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 15px 0; }
+        .data-card { background: #f8f9fa; border-radius: 6px; padding: 12px; text-align: center; }
+        .data-card .label { font-size: 12px; color: #888; }
+        .data-card .value { font-size: 24px; font-weight: bold; margin-top: 4px; }
+        .preset-btns { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin: 10px 0; }
+        .preset-btn { padding: 8px 16px; border: 1px solid #ccc; border-radius: 6px; background: white; cursor: pointer; font-size: 13px; }
+        .preset-btn:hover { background: #e3f2fd; border-color: #2196F3; }
+        .preset-btn.active { background: #2196F3; color: white; border-color: #2196F3; }
+        .status-bar { display: flex; align-items: center; justify-content: center; gap: 15px; margin-top: 8px; }
+        .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; }
+        .dot-green { background: #4CAF50; }
+        .dot-gray { background: #ccc; }
+        .csv-preview { background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); padding: 20px; }
+        .csv-preview pre { background: #f5f5f5; padding: 10px; border-radius: 4px; font-size: 12px; overflow-x: auto; }
+        .auto-indicator { text-align: center; font-size: 14px; color: #666; }
+        .auto-indicator .active { color: #4CAF50; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>完整数据模拟测试</h1>
+    <div class="test-container">
+        <!-- 仪表盘 -->
+        <div class="dashboard-row" id="dashboardRow">
+            <div class="dashboard-item">
+                <h2>端口 COM1</h2>
+                <div class="gauges-container">
+                    <div class="gauge-container">
+                        <div class="gauge-title">风速 (m/s)</div>
+                        <div id="speedGauge" class="gauge-chart"></div>
+                        <div id="speedValue" class="gauge-value">-- m/s</div>
+                    </div>
+                    <div class="gauge-container">
+                        <div class="gauge-title">风向</div>
+                        <div id="dirGauge" class="gauge-chart"></div>
+                        <div id="dirValue" class="gauge-value">-- °</div>
+                    </div>
+                </div>
+                <div style="display:flex; justify-content:center; gap:30px; margin-top:12px; padding:8px 0; border-top:1px solid #eee;">
+                    <div style="text-align:center;">
+                        <div style="font-size:20px; font-weight:bold; color:#FF5722;" id="tempValue">-- ℃</div>
+                        <div style="font-size:11px; color:#888;">温度</div>
+                    </div>
+                    <div style="text-align:center;">
+                        <div style="font-size:20px; font-weight:bold; color:#333;" id="pressValue">-- hPa</div>
+                        <div style="font-size:11px; color:#888;">气压</div>
+                    </div>
+                    <div style="text-align:center;">
+                        <div style="font-size:20px; font-weight:bold; color:#2196F3;" id="humValue">-- %RH</div>
+                        <div style="font-size:11px; color:#888;">湿度</div>
+                    </div>
+                </div>
+                <div class="status-bar">
+                    <span><span class="dot dot-green"></span> 已连接</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 控制区 -->
+        <div class="controls">
+            <div style="text-align:center; font-size:16px; font-weight:bold; color:#555; margin-bottom:10px;">
+                模拟数据：<span id="simStatus" class="auto-indicator"><span class="active">● 运行中</span>（每秒自动发送）</span>
+            </div>
+            <div class="data-grid" id="dataDisplay">
+                <div class="data-card">
+                    <div class="label">风速</div>
+                    <div class="value" id="dispSpeed" style="color:#2196F3;">0.0</div>
+                    <div class="gauge-sub">m/s</div>
+                </div>
+                <div class="data-card">
+                    <div class="label">风向</div>
+                    <div class="value" id="dispDir" style="color:#FF9800;">0</div>
+                    <div class="gauge-sub">°</div>
+                </div>
+                <div class="data-card">
+                    <div class="label">温度</div>
+                    <div class="value" id="dispTemp" style="color:#FF5722;">0.0</div>
+                    <div class="gauge-sub">℃</div>
+                </div>
+                <div class="data-card">
+                    <div class="label">气压</div>
+                    <div class="value" id="dispPress" style="color:#333;">0.0</div>
+                    <div class="gauge-sub">hPa</div>
+                </div>
+                <div class="data-card">
+                    <div class="label">湿度</div>
+                    <div class="value" id="dispHum" style="color:#2196F3;">0</div>
+                    <div class="gauge-sub">%RH</div>
+                </div>
+            </div>
+            <div class="preset-btns">
+                <button class="preset-btn" data-wind="0.8" data-dir="208" data-temp="30.1" data-press="995.3" data-hum="54">典型值</button>
+                <button class="preset-btn" data-wind="3.5" data-dir="90" data-temp="25.0" data-press="1013.2" data-hum="45">微风晴天</button>
+                <button class="preset-btn" data-wind="8.2" data-dir="315" data-temp="15.5" data-press="1008.7" data-hum="78">大风潮湿</button>
+                <button class="preset-btn" data-wind="12.0" data-dir="180" data-temp="35.0" data-press="998.0" data-hum="30">高温大风</button>
+                <button class="preset-btn" data-wind="0.0" data-dir="0" data-temp="12.3" data-press="1020.5" data-hum="60">静风</button>
+            </div>
+        </div>
+
+        <!-- CSV 预览 -->
+        <div class="csv-preview">
+            <h3 style="margin:0 0 10px 0; color:#555;">CSV 输出预览</h3>
+            <pre id="csvPreview">timestamp,port,wind_speed,wind_direction,temperature,pressure,humidity
+(等待数据...)</pre>
+        </div>
+    </div>
+
+    <script>
+        // ===== 仪表盘初始化 =====
+        let gaugeState = { speedGauge: null, speedPointer: null, dirGauge: null };
+        let csvLines = [];
+        const MAX_CSV_LINES = 20;
+
+        function initGauges() {
+            // 风速仪表盘
+            const speedContainer = d3.select('#speedGauge');
+            const svg = speedContainer.append('svg').attr('width', 160).attr('height', 160)
+                .append('g').attr('transform', 'translate(80,80)');
+
+            const ARC_OFFSET = Math.PI / 2;
+            // 背景弧
+            svg.append('path')
+                .datum({endAngle: Math.PI / 3 + ARC_OFFSET})
+                .attr('d', d3.arc().innerRadius(55).outerRadius(65)
+                    .startAngle(-Math.PI * 4/3 + ARC_OFFSET).endAngle(Math.PI / 3 + ARC_OFFSET))
+                .attr('fill', '#e0e0e0');
+
+            // 前景弧
+            const fg = svg.append('path')
+                .datum({endAngle: -Math.PI * 4/3 + ARC_OFFSET})
+                .attr('d', d3.arc().innerRadius(55).outerRadius(65)
+                    .startAngle(-Math.PI * 4/3 + ARC_OFFSET).endAngle(-Math.PI * 4/3 + ARC_OFFSET))
+                .attr('fill', '#2196F3');
+
+            // 指针
+            const ptr = svg.append('line')
+                .attr('x1', 0).attr('y1', 0).attr('x2', 0).attr('y2', -55)
+                .attr('stroke', '#333').attr('stroke-width', 3).attr('transform', 'rotate(0)');
+
+            // 刻度
+            for (let i = 0; i <= 10; i++) {
+                const a = -Math.PI * 4/3 + ARC_OFFSET + (Math.PI * 5/3 * i) / 10;
+                const ir = i % 2 === 0 ? 48 : 55;
+                svg.append('line')
+                    .attr('x1', Math.cos(a)*ir).attr('y1', Math.sin(a)*ir)
+                    .attr('x2', Math.cos(a)*65).attr('y2', Math.sin(a)*65)
+                    .attr('stroke','#666').attr('stroke-width',1.5);
+                if (i % 2 === 0) {
+                    svg.append('text')
+                        .attr('x', Math.cos(a)*35).attr('y', Math.sin(a)*35)
+                        .attr('text-anchor','middle').attr('dy','0.35em')
+                        .attr('font-size','14px').attr('font-weight','bold').attr('fill','#333')
+                        .text(i.toString());
+                }
+            }
+
+            // 风向罗盘
+            const dirContainer = d3.select('#dirGauge');
+            const dSvg = dirContainer.append('svg').attr('width', 160).attr('height', 160)
+                .append('g').attr('transform', 'translate(80,80)');
+
+            dSvg.append('circle').attr('cx',0).attr('cy',0).attr('r',60)
+                .attr('fill','none').attr('stroke','#e0e0e0').attr('stroke-width',8);
+
+            const dirs = [
+                {label:'N', dx:0, dy:-45}, {label:'E', dx:45, dy:0},
+                {label:'S', dx:0, dy:45}, {label:'W', dx:-45, dy:0}
+            ];
+            dirs.forEach(d => {
+                dSvg.append('text').attr('x',d.dx).attr('y',d.dy)
+                    .attr('text-anchor','middle').attr('dy','0.35em')
+                    .attr('font-size','12px').attr('font-weight','bold').attr('fill','#666')
+                    .text(d.label);
+            });
+
+            const dirPtr = dSvg.append('polygon')
+                .attr('points','0,-50 -3,0 0,5 3,0')
+                .attr('fill','#FF9800').attr('transform','rotate(0)');
+
+            gaugeState.speedGauge = fg;
+            gaugeState.speedPointer = ptr;
+            gaugeState.dirGauge = dirPtr;
+        }
+
+        function updateSpeed(speed) {
+            if (!gaugeState.speedGauge) return;
+            const ARC_OFFSET = Math.PI / 2;
+            const clamped = Math.max(0, Math.min(10, speed));
+            const angle = -Math.PI * 4/3 + (Math.PI * 5/3 * clamped) / 10;
+            const fgEnd = angle + ARC_OFFSET;
+
+            const arc = d3.arc().innerRadius(55).outerRadius(65)
+                .startAngle(-Math.PI * 4/3 + ARC_OFFSET).endAngle(fgEnd);
+            gaugeState.speedGauge.datum({endAngle: fgEnd})
+                .transition().duration(300)
+                .attrTween('d', function(d) {
+                    const i = d3.interpolate(d.endAngle, fgEnd);
+                    return function(t) { d.endAngle = i(t); return arc(d); };
+                });
+
+            const ptrRotation = (angle * 180 / Math.PI) + 90;
+            gaugeState.speedPointer.transition().duration(300)
+                .attr('transform', `rotate(${ptrRotation})`);
+
+            let color = '#2196F3';
+            if (clamped > 7) color = '#FF9800';
+            if (clamped >= 10) color = '#F44336';
+            gaugeState.speedGauge.attr('fill', color);
+
+            document.getElementById('speedValue').textContent = speed.toFixed(1) + ' m/s';
+            document.getElementById('dispSpeed').textContent = speed.toFixed(1);
+        }
+
+        function updateDirection(dir) {
+            if (!gaugeState.dirGauge) return;
+            const clamped = ((dir % 360) + 360) % 360;
+            gaugeState.dirGauge.transition().duration(300)
+                .attr('transform', `rotate(${clamped})`);
+            document.getElementById('dirValue').textContent = clamped.toFixed(0) + ' °';
+            document.getElementById('dispDir').textContent = clamped.toFixed(0);
+        }
+
+        function updateEnv(temp, press, hum) {
+            document.getElementById('tempValue').textContent = 
+                temp !== null ? temp.toFixed(1) + ' ℃' : '-- ℃';
+            document.getElementById('pressValue').textContent = 
+                press !== null ? press.toFixed(1) + ' hPa' : '-- hPa';
+            document.getElementById('humValue').textContent = 
+                hum !== null ? hum.toFixed(0) + ' %RH' : '-- %RH';
+            document.getElementById('dispTemp').textContent = temp !== null ? temp.toFixed(1) : '--';
+            document.getElementById('dispPress').textContent = press !== null ? press.toFixed(1) : '--';
+            document.getElementById('dispHum').textContent = hum !== null ? hum.toFixed(0) : '--';
+        }
+
+        function updateCSVPreview(data) {
+            const line = `${data.timestamp},COM1,${data.wind_speed.toFixed(1)},${data.wind_direction.toFixed(0)},${data.temperature.toFixed(1)},${data.pressure.toFixed(1)},${data.humidity.toFixed(0)}`;
+            csvLines.push(line);
+            if (csvLines.length > MAX_CSV_LINES) csvLines.shift();
+            document.getElementById('csvPreview').textContent = 
+                'timestamp,port,wind_speed,wind_direction,temperature,pressure,humidity\n' + 
+                csvLines.join('\n');
+        }
+
+        // ===== 模拟数据发送 =====
+        function sendMockData(wind, dir, temp, press, hum) {
+            const data = {
+                timestamp: new Date().toISOString(),
+                port: 'COM1',
+                wind_speed: wind,
+                wind_direction: dir,
+                temperature: temp,
+                pressure: press,
+                humidity: hum
+            };
+            updateSpeed(data.wind_speed);
+            updateDirection(data.wind_direction);
+            updateEnv(data.temperature, data.pressure, data.humidity);
+            updateCSVPreview(data);
+        }
+
+        // 预设值
+        function getPreset(el) {
+            return {
+                wind: parseFloat(el.dataset.wind),
+                dir: parseFloat(el.dataset.dir),
+                temp: parseFloat(el.dataset.temp),
+                press: parseFloat(el.dataset.press),
+                hum: parseFloat(el.dataset.hum)
+            };
+        }
+
+        // 自动模拟
+        let autoTimer = null;
+        let autoStep = 0;
+
+        function startAutoSim() {
+            if (autoTimer) clearInterval(autoTimer);
+            autoStep = 0;
+            autoTimer = setInterval(() => {
+                autoStep++;
+                const t = autoStep % 30;  // 30秒一个周期
+                // 正弦变化模拟
+                const wind = 2 + 6 * Math.abs(Math.sin(t * 0.1));
+                const dir = (autoStep * 5) % 360;
+                const temp = 28 + 5 * Math.sin(t * 0.05);
+                const press = 1005 + 10 * Math.sin(t * 0.03 + 1);
+                const hum = 50 + 20 * Math.abs(Math.sin(t * 0.07));
+                sendMockData(wind, dir, temp, press, hum);
+            }, 1000);
+        }
+
+        // ===== 初始化 =====
+        initGauges();
+        startAutoSim();
+
+        // 预设按钮
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+                const p = getPreset(this);
+                sendMockData(p.wind, p.dir, p.temp, p.press, p.hum);
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+命令1：cd C:\Users\ZZY\Desktop\Test\web_monitor\web; C:\Users\ZZY\Desktop\Test\web_monitor\venv\Scripts\python.exe -m PyInstaller wind_monitor_new.spec --clean
+
+
+命令2：cd C:\Users\ZZY\Desktop\Test\web_monitor\web; ..\venv\Scripts\python.exe create_executable.py

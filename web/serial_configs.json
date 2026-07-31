@@ -1,0 +1,38 @@
+{
+  "COM1": {
+    "port": "COM1",
+    "baudrate": 9600,
+    "bytesize": 8,
+    "parity": "N",
+    "stopbits": 1,
+    "timeout": 1.0,
+    "name": "默认配置1"
+  },
+  "COM2": {
+    "port": "COM2",
+    "baudrate": 115200,
+    "bytesize": 8,
+    "parity": "N",
+    "stopbits": 1,
+    "timeout": 1.0,
+    "name": "高速配置"
+  },
+  "COM3": {
+    "port": "COM3",
+    "baudrate": 9600,
+    "bytesize": 8,
+    "parity": "E",
+    "stopbits": 1,
+    "timeout": 1.0,
+    "name": "带校验配置"
+  },
+  "/dev/ttyUSB0": {
+    "port": "/dev/ttyUSB0",
+    "baudrate": 9600,
+    "bytesize": 8,
+    "parity": "N",
+    "stopbits": 1,
+    "timeout": 1.0,
+    "name": "Linux USB串口"
+  }
+}

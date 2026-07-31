@@ -1,0 +1,1838 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>风速风向实时监测系统</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 10px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+            padding: 0 10px;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #333;
+        }
+        .dashboard-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            margin-bottom: 30px;
+            overflow-x: auto;
+        }
+        .dashboard-item {
+            flex: 1;
+            min-width: 250px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 15px;
+        }
+        .dashboard-item h2 {
+            margin-top: 0;
+            color: #555;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+            text-align: center;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            cursor: pointer;
+        }
+        .port-title {
+            flex-grow: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+        .port-title:hover {
+            background-color: #f0f0f0;
+        }
+        .port-name-input {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 2px 5px;
+            font-size: 14px;
+            width: 100px;
+            text-align: center;
+        }
+        .save-port-name {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 2px 6px;
+            cursor: pointer;
+            margin-left: 5px;
+            font-size: 12px;
+        }
+        .cancel-port-name {
+            background: #f44336;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 2px 6px;
+            cursor: pointer;
+            margin-left: 3px;
+            font-size: 12px;
+        }
+        .gauges-container {
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            gap: 30px;
+        }
+        .gauge-container {
+            text-align: center;
+            flex: 1;
+            min-width: 160px;
+        }
+        .gauge-title {
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #555;
+        }
+        .gauge-chart {
+            width: 160px;
+            height: 160px;
+            margin: 0 auto;
+        }
+        .gauge-value {
+            font-size: 24px;
+            font-weight: bold;
+            text-align: center;
+            margin-top: 10px;
+        }
+        .card {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        .card h2 {
+            margin-top: 0;
+            color: #555;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        .chart-container {
+            height: 400px;
+            position: relative;
+        }
+        .controls-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .control-group {
+            flex: 1;
+            min-width: 250px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 20px;
+        }
+        .control-group h3 {
+            margin-top: 0;
+            color: #555;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        select, input, button {
+            width: 100%;
+            padding: 10px;
+            margin: 8px 0;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover {
+            background-color: #0b7dda;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-connected {
+            background-color: #4CAF50;
+        }
+        .status-disconnected {
+            background-color: #f44336;
+        }
+        .port-control {
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+        }
+        .port-control select {
+            flex: 1;
+            margin-right: 10px;
+        }
+        .port-status {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background-color: #f44336;
+        }
+        .port-status.connected {
+            background-color: #4CAF50;
+        }
+        .action-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .action-buttons button {
+            flex: 1;
+        }
+    </style>
+</head>
+<body>
+    <div class="connection-banner" id="connection-banner" style="display:none; position:fixed; top:0; left:0; right:0; padding:8px; text-align:center; z-index:9999; background:#ff4444; color:white; font-weight:bold;"></div>
+    <div class="container">
+        
+        <!-- 第一行：仪表盘 -->
+        <div class="dashboard-row" id="dashboardRow">
+            <!-- 仪表盘项将通过JavaScript动态添加 -->
+        </div>
+
+        <!-- 第二行：折线图 -->
+        <div class="card">
+            <div class="chart-controls" style="display:flex; justify-content:space-between; align-items:center; margin:0 0 10px 0; padding:0 5px; gap:10px; flex-wrap:wrap;">
+                <div class="time-range-group" style="display:flex; align-items:center; gap:6px;">
+                    <span style="font-size:13px; color:#666;">时间范围：</span>
+                    <button class="time-range-btn active" data-minutes="30" style="padding:4px 12px; border:1px solid #2196F3; background:#2196F3; color:white; border-radius:4px; cursor:pointer; font-size:13px;">30分钟</button>
+                    <button class="time-range-btn" data-minutes="60" style="padding:4px 12px; border:1px solid #ccc; background:white; color:#333; border-radius:4px; cursor:pointer; font-size:13px;">1小时</button>
+                    <button class="time-range-btn" data-minutes="120" style="padding:4px 12px; border:1px solid #ccc; background:white; color:#333; border-radius:4px; cursor:pointer; font-size:13px;">2小时</button>
+                </div>
+                <div class="yaxis-control" style="display:flex; align-items:center; gap:6px;">
+                    <span style="font-size:13px; color:#666;">风速上限：</span>
+                    <input type="number" id="yMaxInput" value="10" min="5" max="50" step="1" style="width:60px; padding:4px 8px; border:1px solid #ccc; border-radius:4px; font-size:13px; text-align:center;">
+                    <span style="font-size:12px; color:#999;">m/s</span>
+                    <button id="applyYMaxBtn" style="padding:4px 12px; border:1px solid #2196F3; background:#2196F3; color:white; border-radius:4px; cursor:pointer; font-size:13px;">应用</button>
+                </div>
+            </div>
+            <div class="chart-container">
+                <canvas id="windSpeedChart"></canvas>
+            </div>
+        </div>
+
+        <!-- 第三行：控制区域 -->
+        <div class="controls-row">
+            <div class="control-group">
+                <h3>串口 1 控制</h3>
+                <div class="port-control">
+                    <select class="port-select" id="portSelect1">
+                        <option value="">选择串口</option>
+                    </select>
+                    <div class="port-status" id="portStatus1"></div>
+                </div>
+                <div class="action-buttons">
+                    <button onclick="connectPort(1)">连接</button>
+                    <button onclick="disconnectPort(1)">断开</button>
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <h3>串口 2 控制</h3>
+                <div class="port-control">
+                    <select class="port-select" id="portSelect2">
+                        <option value="">选择串口</option>
+                    </select>
+                    <div class="port-status" id="portStatus2"></div>
+                </div>
+                <div class="action-buttons">
+                    <button onclick="connectPort(2)">连接</button>
+                    <button onclick="disconnectPort(2)">断开</button>
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <h3>串口 3 控制</h3>
+                <div class="port-control">
+                    <select class="port-select" id="portSelect3">
+                        <option value="">选择串口</option>
+                    </select>
+                    <div class="port-status" id="portStatus3"></div>
+                </div>
+                <div class="action-buttons">
+                    <button onclick="connectPort(3)">连接</button>
+                    <button onclick="disconnectPort(3)">断开</button>
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <h3>系统操作</h3>
+                <div class="action-buttons">
+                    <button id="refreshPorts">刷新串口列表</button>
+                    <button id="saveData">保存数据</button>
+                    <button id="exitProgram">退出程序</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 初始化Socket.IO连接（禁用内置重连，使用自定义重连逻辑以便控制UI提示）
+        const socket = io({
+            reconnection: true,
+            reconnectionAttempts: 5,
+            reconnectionDelay: 2000,
+            reconnectionDelayMax: 10000
+        });
+
+        // WebSocket连接状态
+        let isConnected = false;
+
+        // 更新连接状态横幅
+        function updateConnectionStatus(status) {
+            const banner = document.getElementById('connection-banner');
+            if (!banner) return;
+            if (status === 'connected') {
+                banner.style.display = 'none';
+            } else if (status === 'reconnecting') {
+                banner.style.display = 'block';
+                banner.textContent = '连接中断，正在重连...';
+                banner.style.background = '#ff9800';
+            } else if (status === 'disconnected') {
+                banner.style.display = 'block';
+                banner.textContent = '连接已断开，请刷新页面';
+                banner.style.background = '#f44336';
+            }
+        }
+
+        // 监听连接事件
+        socket.on('connect', function() {
+            console.log('WebSocket连接已建立');
+            isConnected = true;
+            updateConnectionStatus('connected');
+        });
+
+        // 监听断开连接事件
+        socket.on('disconnect', function(reason) {
+            console.log('WebSocket连接已断开，原因：', reason);
+            isConnected = false;
+            // P1-9: 区分服务器主动断开（不会自动重连）和其他原因（会自动重连）
+            if (reason === 'io server disconnect') {
+                updateConnectionStatus('disconnected');
+            } else {
+                updateConnectionStatus('reconnecting');
+            }
+        });
+
+        // 监听重连尝试
+        socket.on('reconnect_attempt', function(attemptNumber) {
+            console.log('尝试重连：', attemptNumber);
+        });
+
+        // 监听重连成功
+        socket.on('reconnect', function(attemptNumber) {
+            console.log('重连成功，尝试次数：', attemptNumber);
+            isConnected = true;
+            updateConnectionStatus('connected');
+        });
+
+        // 监听重连失败
+        socket.on('reconnect_error', function(error) {
+            console.log('重连失败：', error);
+        });
+
+        // 监听重连彻底失败（所有重连尝试均已耗尽）
+        socket.on('reconnect_failed', function() {
+            console.log('达到最大重连次数，停止重连');
+            updateConnectionStatus('disconnected');
+        });
+
+        // 监听初始连接失败
+        socket.on('connect_error', function(error) {
+            console.error('连接失败:', error);
+            updateConnectionStatus('disconnected');
+        });
+
+        // 存储各端口的仪表盘元素和自定义名称
+        const portGauges = {};
+        const portCharts = {};
+        // 弧偏移量：顺时针旋转90°
+        const ARC_OFFSET = Math.PI / 2;
+        // 从localStorage加载已保存的自定义名称，如果没有则初始化为空对象
+        let portCustomNames = JSON.parse(localStorage.getItem('portCustomNames') || '{}');
+        // 图表时间范围（分钟），默认30分钟
+        let selectedTimeRange = 30;
+        // 图表Y轴上限，默认10m/s
+        let yAxisMax = 10;
+        // P1-8: 图表变量提升到全局（声明在 DOMContentLoaded 之外）
+        let windSpeedChart;
+
+        // 页面加载完成后执行
+        document.addEventListener('DOMContentLoaded', function() {
+            // P1-8: Chart 初始化移到 DOMContentLoaded 回调内，确保 canvas 元素已就绪
+            const ctx = document.getElementById('windSpeedChart').getContext('2d');
+            windSpeedChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: []
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: '时间',
+                                font: { size: 14 }
+                            },
+                            ticks: {
+                                font: { size: 12 },
+                                maxRotation: 45,
+                                minRotation: 45,
+                                autoSkip: true,
+                                maxTicksLimit: 10
+                            }
+                            // X轴范围在 redrawChart 中动态设置
+                        },
+                        y: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: '风速 (m/s)',
+                                font: { size: 14 }
+                            },
+                            ticks: {
+                                font: { size: 12 }
+                            },
+                            min: 0,
+                            max: 10
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                font: { size: 14 }
+                            }
+                        }
+                    }
+                }
+            });
+
+            // 绑定按钮事件
+            document.getElementById('refreshPorts').addEventListener('click', refreshAvailablePorts);
+            document.getElementById('saveData').addEventListener('click', saveData);
+            document.getElementById('exitProgram').addEventListener('click', exitProgram);
+            
+            // 绑定时间范围按钮事件
+            document.querySelectorAll('.time-range-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    // 切换激活状态
+                    document.querySelectorAll('.time-range-btn').forEach(b => {
+                        b.style.background = 'white';
+                        b.style.color = '#333';
+                        b.style.borderColor = '#ccc';
+                    });
+                    this.style.background = '#2196F3';
+                    this.style.color = 'white';
+                    this.style.borderColor = '#2196F3';
+                    
+                    selectedTimeRange = parseInt(this.dataset.minutes);
+                    // 重新绘制图表
+                    redrawChart();
+                });
+            });
+            
+            // 绑定Y轴上限应用按钮
+            document.getElementById('applyYMaxBtn').addEventListener('click', function() {
+                const input = document.getElementById('yMaxInput');
+                const value = parseFloat(input.value);
+                if (value && value >= 5 && value <= 50) {
+                    yAxisMax = value;
+                    windSpeedChart.options.scales.y.max = yAxisMax;
+                    windSpeedChart.update();
+                } else {
+                    alert('请输入5-50之间的数值');
+                    input.value = yAxisMax;
+                }
+            });
+            // 回车键也触发应用
+            document.getElementById('yMaxInput').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    document.getElementById('applyYMaxBtn').click();
+                }
+            });
+            
+            // 初始刷新串口列表
+            refreshAvailablePorts();
+            
+            // 定期更新系统状态
+            setInterval(updateSystemStatus, 3000);
+            updateSystemStatus();
+            
+            // 页面加载后恢复已保存的自定义名称显示
+            restoreCustomNames();
+        });
+        
+        // 恢复已保存的自定义名称显示
+        function restoreCustomNames() {
+            // 遍历所有已保存的自定义名称
+            for (const port in portCustomNames) {
+                if (portCustomNames.hasOwnProperty(port)) {
+                    // 如果该端口的仪表盘已存在，则更新显示
+                    if (portGauges[port]) {
+                        const titleElement = document.getElementById(`port-title-${port}`);
+                        if (titleElement) {
+                            titleElement.textContent = portCustomNames[port];
+
+                            // 更新图表标签
+                            if (portCharts[port]) {
+                                const datasetIndex = portCharts[port].datasetIndex;
+                                if (windSpeedChart.data.datasets[datasetIndex]) {
+                                    windSpeedChart.data.datasets[datasetIndex].label = portCustomNames[port];
+                                    portCharts[port].currentLabel = portCustomNames[port];
+                                    windSpeedChart.update();
+                                }
+                            }
+                        }
+
+                        // 更新控制区域备注
+                        updatePortControlRemark(port, portCustomNames[port]);
+                    }
+                }
+            }
+        }
+        
+        // 启动程序
+        function startProgram() {
+            fetch('/api/start_program', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('程序已启动');
+                } else {
+                    alert('启动程序失败: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('启动程序失败:', error);
+                alert('启动程序失败: ' + error.message);
+            });
+        }
+        
+        // 停止程序
+        function stopProgram() {
+            if (confirm('确定要停止程序吗？这将断开所有串口连接但不会退出主程序')) {
+                fetch('/api/stop_program', {
+                    method: 'POST'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('程序已停止');
+                    } else {
+                        alert('停止程序失败: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('停止程序失败:', error);
+                    alert('停止程序失败: ' + error.message);
+                });
+            }
+        }
+        
+        // 刷新可用串口列表
+        function refreshAvailablePorts() {
+            fetch('/api/get_available_ports')
+                .then(response => response.json())
+                .then(data => {
+                    const portSelects = document.querySelectorAll('.port-select');
+                    
+                    portSelects.forEach(select => {
+                        const currentValue = select.value;
+                        select.innerHTML = '<option value="">选择串口</option>';
+                        
+                        if (data.success) {
+                            data.ports.forEach(port => {
+                                const option = document.createElement('option');
+                                option.value = port.device;
+                                option.textContent = `${port.device} - ${port.description}`;
+                                select.appendChild(option);
+                            });
+                        }
+                        
+                        // 恢复之前的选择
+                        if (currentValue) {
+                            select.value = currentValue;
+                        }
+                    });
+                })
+                .catch(error => {
+                    console.error('获取串口列表失败:', error);
+                });
+        }
+        
+        // 连接端口
+        function connectPort(portNum) {
+            const portSelect = document.getElementById(`portSelect${portNum}`);
+            const port = portSelect.value;
+            
+            if (!port) {
+                alert('请选择串口');
+                return;
+            }
+            
+            // 检查是否已经为该端口创建了仪表盘（即已经连接或正在连接）
+            if (portGauges[port]) {
+                alert('该端口已经连接');
+                return;
+            }
+            
+            console.log("准备创建仪表盘:", port);
+            
+            // 先创建仪表盘，不管连接是否成功
+            createPortGauge(port);
+            
+            // 检查仪表盘是否创建成功
+            if (!portGauges[port]) {
+                console.error("仪表盘创建失败:", port);
+                return;
+            }
+            
+            // 如果该端口有自定义名称，则更新显示
+            if (portCustomNames[port]) {
+                const titleElement = document.getElementById(`port-title-${port}`);
+                if (titleElement) {
+                    titleElement.textContent = portCustomNames[port];
+                    // 更新图表标签
+                    if (portCharts[port]) {
+                        const datasetIndex = portCharts[port].datasetIndex;
+                        if (windSpeedChart.data.datasets[datasetIndex]) {
+                            windSpeedChart.data.datasets[datasetIndex].label = portCustomNames[port];
+                            portCharts[port].currentLabel = portCustomNames[port];
+                            windSpeedChart.update();
+                        }
+                    }
+                }
+                // 更新控制区域备注
+                updatePortControlRemark(port, portCustomNames[port]);
+            }
+            
+            console.log("开始连接端口:", port);
+            
+            // 再尝试连接端口
+            fetch('/api/add_port', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({port: port})
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log("连接端口响应:", data);
+                if (data.success) {
+                    updateSystemStatus();
+                } else if (data.code === 'already_connected') {
+                    // 端口已连接，不清理仪表盘，只提示用户
+                    alert('端口 ' + port + ' 已连接，无需重复添加');
+                } else {
+                    // 连接失败时清理已创建的仪表盘，避免残留僵尸卡片
+                    removePortGauge(port);
+                    alert('错误: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('连接端口失败:', error);
+                // 连接异常时也清理已创建的仪表盘
+                removePortGauge(port);
+                alert('连接端口失败: ' + error.message);
+            });
+        }
+        
+        // 断开端口
+        function disconnectPort(portNum) {
+            const portSelect = document.getElementById(`portSelect${portNum}`);
+            const port = portSelect.value;
+            
+            if (!port) {
+                alert('没有可断开的端口');
+                return;
+            }
+            
+            fetch('/api/remove_port', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({port: port})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // 移除该端口的仪表盘
+                    removePortGauge(port);
+                    updateSystemStatus();
+                } else {
+                    alert('错误: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('断开端口失败:', error);
+                alert('断开端口失败: ' + error.message);
+            });
+        }
+        
+        // 创建端口仪表盘
+        function createPortGauge(port) {
+            console.log("createPortGauge 被调用，端口:", port);
+            console.log("当前 portGauges 状态:", portGauges);
+            
+            // 如果已经存在该端口的仪表盘，则不重复创建
+            if (portGauges[port]) {
+                console.log("仪表盘已存在，不重复创建:", port);
+                return;
+            }
+            
+            // 创建仪表盘容器
+            const dashboardRow = document.getElementById('dashboardRow');
+            const dashboardItem = document.createElement('div');
+            dashboardItem.className = 'dashboard-item';
+            dashboardItem.id = `dashboard-${port}`;
+            
+            dashboardItem.innerHTML = `
+                <h2>
+                    <span class="port-title" id="port-title-${port}">端口 ${port}</span>
+                </h2>
+                <div class="gauges-container">
+                    <div class="gauge-container">
+                        <div class="gauge-title">风速 (m/s)</div>
+                        <div id="windSpeedGauge-${port}" class="gauge-chart"></div>
+                        <div id="windSpeedValue-${port}" class="gauge-value">-- m/s</div>
+                    </div>
+                    <div class="gauge-container">
+                        <div class="gauge-title">风向</div>
+                        <div id="windDirectionGauge-${port}" class="gauge-chart"></div>
+                        <div id="windDirectionValue-${port}" class="gauge-value">-- °</div>
+                    </div>
+                </div>
+                <div style="display:flex; justify-content:center; gap:30px; margin-top:12px; padding:8px 0; border-top:1px solid #eee;">
+                    <div style="text-align:center;">
+                        <div style="font-size:28px; font-weight:bold; color:#FF5722;" id="temperatureValue-${port}">-- ℃</div>
+                        <div style="font-size:11px; color:#888;">温度</div>
+                    </div>
+                    <div style="text-align:center;">
+                        <div style="font-size:28px; font-weight:bold; color:#333;" id="pressureValue-${port}">-- hPa</div>
+                        <div style="font-size:11px; color:#888;">气压</div>
+                    </div>
+                    <div style="text-align:center;">
+                        <div style="font-size:28px; font-weight:bold; color:#2196F3;" id="humidityValue-${port}">-- %RH</div>
+                        <div style="font-size:11px; color:#888;">湿度</div>
+                    </div>
+                </div>
+                <div style="display:flex; align-items:center; margin-top:10px; justify-content:center;">
+                    <div class="port-status" id="port-status-${port}"></div>
+                    <span style="font-size:12px; color:#666; margin-left:5px;">连接状态</span>
+                </div>
+            `;
+            
+            dashboardRow.appendChild(dashboardItem);
+            
+            // 添加点击事件监听器到标题上，用于编辑名称
+            const titleElement = document.getElementById(`port-title-${port}`);
+            titleElement.addEventListener('click', function(e) {
+                e.stopPropagation();
+                editPortName(port);
+            });
+            
+            // 先初始化引用对象
+            portGauges[port] = {
+                container: dashboardItem,
+                windSpeedGauge: null,
+                windSpeedPointer: null,
+                windDirectionGauge: null
+            };
+            
+            // 在图表中添加该端口的数据集
+            addChartDataset(port);
+            
+            // 初始化D3.js仪表盘
+            initPortGauges(port);
+            
+            console.log("创建新的仪表盘完成:", port);
+            console.log("更新后的 portGauges 状态:", portGauges);
+        }
+        
+        // 初始化特定端口的D3.js仪表盘
+        function initPortGauges(port) {
+            // 初始化风速仪表盘
+            const windSpeedContainer = d3.select(`#windSpeedGauge-${port}`);
+            const windSpeedSvg = windSpeedContainer.append("svg")
+                .attr("width", 160)
+                .attr("height", 160)
+                .append("g")
+                .attr("transform", "translate(80,80)");
+            
+            // 创建风速仪表盘背景弧（顺时针旋转90°）
+            const ARC_OFFSET = Math.PI / 2;
+            const windSpeedBackground = d3.arc()
+                .innerRadius(55)
+                .outerRadius(65)
+                .startAngle(-Math.PI * 4/3 + ARC_OFFSET)
+                .endAngle(Math.PI / 3 + ARC_OFFSET);
+
+            windSpeedSvg.append("path")
+                .datum({endAngle: Math.PI / 3 + ARC_OFFSET})
+                .attr("d", windSpeedBackground)
+                .attr("fill", "#e0e0e0");
+                
+            // 创建风速仪表盘前景弧（动态显示风速的部分，也顺时针旋转90°）
+            const windSpeedForeground = d3.arc()
+                .innerRadius(55)
+                .outerRadius(65)
+                .startAngle(-Math.PI * 4/3 + ARC_OFFSET)
+                .endAngle(-Math.PI * 4/3 + ARC_OFFSET);
+                
+            const windSpeedGauge = windSpeedSvg.append("path")
+                .datum({endAngle: -Math.PI * 4/3 + ARC_OFFSET})
+                .attr("d", windSpeedForeground)
+                .attr("fill", "#2196F3");
+                
+            // 添加风速指针（细长的指针）
+            const windSpeedPointer = windSpeedSvg.append("line")
+                .attr("x1", 0)
+                .attr("y1", 0)
+                .attr("x2", 0)
+                .attr("y2", -55)  // 指针长度
+                .attr("stroke", "#333")
+                .attr("stroke-width", 2)
+                .attr("transform", "rotate(0)");
+                
+            // 添加风速刻度 (0-10m/s, 每1.0一个刻度，字体放大便于辨识)
+            for (let i = 0; i <= 10; i++) {
+                const angle = -Math.PI * 4/3 + (Math.PI * 5/3 * i) / 10;  // 从-240度到60度
+                const innerRadius = i % 2 === 0 ? 48 : 55; // 偶数为长刻度
+                const innerX = Math.cos(angle) * innerRadius;
+                const innerY = Math.sin(angle) * innerRadius;
+                const outerX = Math.cos(angle) * 65;
+                const outerY = Math.sin(angle) * 65;
+                
+                windSpeedSvg.append("line")
+                    .attr("x1", innerX)
+                    .attr("y1", innerY)
+                    .attr("x2", outerX)
+                    .attr("y2", outerY)
+                    .attr("stroke", "#666")
+                    .attr("stroke-width", 1.5);
+                
+                // 添加主刻度标签（偶数刻度显示数字）
+                if (i % 2 === 0) {
+                    const labelX = Math.cos(angle) * 35;  // 靠近中心一点
+                    const labelY = Math.sin(angle) * 35;  // 靠近中心一点
+                    const value = i.toString();
+                    
+                    windSpeedSvg.append("text")
+                        .attr("x", labelX)
+                        .attr("y", labelY)
+                        .attr("text-anchor", "middle")
+                        .attr("dy", "0.35em")
+                        .attr("font-size", "14px")
+                        .attr("font-weight", "bold")
+                        .attr("fill", "#333")
+                        .text(value);
+                }
+            }
+            
+            // 初始化风向罗盘
+            const windDirectionContainer = d3.select(`#windDirectionGauge-${port}`);
+            const windDirectionSvg = windDirectionContainer.append("svg")
+                .attr("width", 160)
+                .attr("height", 160)
+                .append("g")
+                .attr("transform", "translate(80,80)");
+                
+            // 创建风向罗盘外圆
+            windDirectionSvg.append("circle")
+                .attr("cx", 0)
+                .attr("cy", 0)
+                .attr("r", 60)
+                .attr("fill", "none")
+                .attr("stroke", "#e0e0e0")
+                .attr("stroke-width", 8);
+                
+            // 添加方向标签
+            const directions = [
+                {label: "N", angle: -Math.PI/2, dx: 0, dy: -45},
+                {label: "E", angle: 0, dx: 45, dy: 0},
+                {label: "S", angle: Math.PI/2, dx: 0, dy: 45},
+                {label: "W", angle: Math.PI, dx: -45, dy: 0}
+            ];
+            
+            directions.forEach(dir => {
+                windDirectionSvg.append("text")
+                    .attr("x", dir.dx)
+                    .attr("y", dir.dy)
+                    .attr("text-anchor", "middle")
+                    .attr("dy", "0.35em")
+                    .attr("font-size", "12px")
+                    .attr("font-weight", "bold")
+                    .attr("fill", "#666")
+                    .text(dir.label);
+            });
+            
+            // 添加风向刻度 (0-360度)
+            for (let i = 0; i < 360; i += 15) {
+                // 调整角度，使0度指向北方（向上）
+                const angle = (i * Math.PI) / 180 - Math.PI/2;
+                const innerRadius = i % 45 === 0 ? 55 : 58; // 主刻度更短
+                const outerRadius = 60;
+                const innerX = Math.cos(angle) * innerRadius;
+                const innerY = Math.sin(angle) * innerRadius;
+                const outerX = Math.cos(angle) * outerRadius;
+                const outerY = Math.sin(angle) * outerRadius;
+                
+                windDirectionSvg.append("line")
+                    .attr("x1", innerX)
+                    .attr("y1", innerY)
+                    .attr("x2", outerX)
+                    .attr("y2", outerY)
+                    .attr("stroke", "#999")
+                    .attr("stroke-width", 1);
+                
+                // 添加主刻度标签（隐藏0, 90, 180, 270这些数字）
+                if (i % 45 === 0 && ![0, 90, 180, 270].includes(i)) {
+                    const labelRadius = 40;
+                    const labelX = Math.cos(angle) * labelRadius;
+                    const labelY = Math.sin(angle) * labelRadius;
+                    
+                    windDirectionSvg.append("text")
+                        .attr("x", labelX)
+                        .attr("y", labelY)
+                        .attr("text-anchor", "middle")
+                        .attr("dy", "0.35em")
+                        .attr("font-size", "10px")
+                        .attr("fill", "#333")
+                        .text(i);
+                }
+            }
+            
+            // 创建风向指针
+            const windDirectionGauge = windDirectionSvg.append("polygon")
+                .attr("points", "0,-50 -3,0 0,5 3,0")
+                .attr("fill", "#FF9800")
+                .attr("transform", "rotate(0)");
+                
+            // 保存引用
+            if (portGauges[port]) {
+                portGauges[port].windSpeedGauge = windSpeedGauge;
+                portGauges[port].windSpeedPointer = windSpeedPointer;
+                portGauges[port].windDirectionGauge = windDirectionGauge;
+            }
+        }
+        
+        // 移除端口仪表盘
+        function removePortGauge(port) {
+            console.log("removePortGauge 被调用，端口:", port);
+            console.log("移除前 portGauges 状态:", portGauges);
+            
+            if (portGauges[port]) {
+                // 清理D3元素
+                if (portGauges[port].windSpeedGauge) {
+                    portGauges[port].windSpeedGauge.remove();
+                }
+                if (portGauges[port].windSpeedPointer) {
+                    portGauges[port].windSpeedPointer.remove();  // 移除指针
+                }
+                if (portGauges[port].windDirectionGauge) {
+                    portGauges[port].windDirectionGauge.remove();
+                }
+                
+                // 移除DOM元素
+                const dashboardItem = document.getElementById(`dashboard-${port}`);
+                if (dashboardItem) {
+                    dashboardItem.remove();
+                }
+                
+                // 删除引用
+                delete portGauges[port];
+                
+                console.log("移除仪表盘完成:", port);
+                console.log("移除后 portGauges 状态:", portGauges);
+                
+                // 从图表中移除数据集
+                removeChartDataset(port);
+            }
+        }
+        
+        // 更新风速仪表盘
+        function updateWindSpeedGauge(port, speed) {
+            if (!portGauges[port] || !portGauges[port].windSpeedGauge) return;
+            
+            // 更新数值显示
+            const valueElement = document.getElementById(`windSpeedValue-${port}`);
+            if (valueElement) {
+                valueElement.textContent = (speed !== null ? speed.toFixed(1) : "--") + " m/s";
+            }
+            
+            if (speed === null) return;
+            
+            // 限制速度在0-10范围内（超出10则卡在10）
+            const clampedSpeed = Math.max(0, Math.min(10, speed));
+            // 角度范围从-240度到60度
+            const angle = -Math.PI * 4/3 + (Math.PI * 5/3 * clampedSpeed) / 10;
+            
+            // 更新仪表盘前景弧（顺时针旋转90°）
+            const fgEndAngle = angle + ARC_OFFSET;
+            const windSpeedForeground = d3.arc()
+                .innerRadius(55)
+                .outerRadius(65)
+                .startAngle(-Math.PI * 4/3 + ARC_OFFSET)
+                .endAngle(fgEndAngle);
+                
+            portGauges[port].windSpeedGauge.datum({endAngle: fgEndAngle})
+                .transition()
+                .duration(500)
+                .attrTween("d", function(d) {
+                    const interpolate = d3.interpolate(d.endAngle, fgEndAngle);
+                    return function(t) {
+                        d.endAngle = interpolate(t);
+                        return windSpeedForeground(d);
+                    };
+                });
+                
+            // 更新指针角度（+90°转换：d3角度以3点钟为0°，指针默认朝上）
+            if (portGauges[port].windSpeedPointer) {
+                const pointerRotation = (angle * 180 / Math.PI) + 90;
+                portGauges[port].windSpeedPointer
+                    .transition()
+                    .duration(500)
+                    .attr("transform", `rotate(${pointerRotation})`);
+            }
+                
+            // 根据速度值更改颜色
+            let color = "#2196F3"; // 蓝色
+            if (clampedSpeed > 7) {
+                color = "#FF9800"; // 橙色（预警区 7-10 m/s）
+            }
+            if (clampedSpeed >= 10) {
+                color = "#F44336"; // 红色（已达上限 10 m/s）
+            }
+            
+            portGauges[port].windSpeedGauge.attr("fill", color);
+        }
+        
+        // 更新风向罗盘
+        function updateWindDirectionGauge(port, direction) {
+            if (!portGauges[port] || !portGauges[port].windDirectionGauge) return;
+            
+            // 更新数值显示
+            const valueElement = document.getElementById(`windDirectionValue-${port}`);
+            if (valueElement) {
+                valueElement.textContent = (direction !== null ? direction.toFixed(1) : "--") + " °";
+            }
+            
+            if (direction === null) return;
+            
+            // 指针默认朝上指向正北，并调整角度使0度指向北方
+            const clampedDirection = ((direction % 360) + 360) % 360;
+            const adjustedAngle = clampedDirection; // 调整角度使0度指向北方
+            
+            // 更新指针旋转角度
+            portGauges[port].windDirectionGauge
+                .transition()
+                .duration(500)
+                .attr("transform", `rotate(${adjustedAngle})`);
+        }
+        
+        // 添加图表数据集
+        function addChartDataset(port) {
+            const colorPalette = [
+                'rgb(33, 150, 243)',  // 蓝色
+                'rgb(255, 152, 0)',   // 橙色
+                'rgb(76, 175, 80)',   // 绿色
+                'rgb(244, 67, 54)',   // 红色
+                'rgb(156, 39, 176)',  // 紫色
+                'rgb(0, 188, 212)'    // 青色
+            ];
+            
+            const datasetIndex = windSpeedChart.data.datasets.length;
+            const color = colorPalette[datasetIndex % colorPalette.length];
+            
+            windSpeedChart.data.datasets.push({
+                label: `端口 ${port}`,  // 默认显示端口名称
+                data: [],
+                borderColor: color,
+                backgroundColor: color.replace(')', ', 0.1)').replace('rgb', 'rgba'),
+                borderWidth: 2,
+                fill: false,
+                pointRadius: 0,     // 不显示数据点圆圈
+                pointHitRadius: 5,  // 鼠标悬停感应区域
+                spanNulls: true,    // null值处不断开线条（连续折线）
+                tension: 0.2        // 轻微平滑
+            });
+            
+            portCharts[port] = {
+                datasetIndex: datasetIndex,
+                dataPoints: [],
+                currentLabel: `端口 ${port}`
+            };
+            
+            windSpeedChart.update();
+        }
+        
+        // 移除图表数据集
+        function removeChartDataset(port) {
+            if (portCharts[port]) {
+                // 通过label查找目标数据集，避免splice索引偏移问题
+                const portLabel = portCharts[port].currentLabel || `端口 ${port}`;
+                const idx = windSpeedChart.data.datasets.findIndex(ds => ds.label === portLabel);
+                if (idx !== -1) {
+                    windSpeedChart.data.datasets.splice(idx, 1);
+                    // 更新后续数据集的索引（仍需维护datasetIndex供其他地方使用）
+                    Object.values(portCharts).forEach(chartInfo => {
+                        if (chartInfo.datasetIndex > idx) {
+                            chartInfo.datasetIndex--;
+                        }
+                    });
+                }
+
+                // 删除引用
+                delete portCharts[port];
+
+                windSpeedChart.update();
+            }
+        }
+        
+        // 更新环境数据（温度、气压、湿度）
+        function updateEnvironmentData(port, temperature, pressure, humidity) {
+            const tempEl = document.getElementById(`temperatureValue-${port}`);
+            const pressEl = document.getElementById(`pressureValue-${port}`);
+            const humEl = document.getElementById(`humidityValue-${port}`);
+            
+            if (tempEl) {
+                tempEl.textContent = temperature !== null && temperature !== undefined
+                    ? temperature.toFixed(1) + ' ℃' : '-- ℃';
+            }
+            if (pressEl) {
+                pressEl.textContent = pressure !== null && pressure !== undefined
+                    ? pressure.toFixed(1) + ' hPa' : '-- hPa';
+            }
+            if (humEl) {
+                humEl.textContent = humidity !== null && humidity !== undefined
+                    ? humidity.toFixed(1) + ' %RH' : '-- %RH';
+            }
+        }
+
+        // 更新图表数据 — 存原始秒数据，redrawChart 做分钟平均
+        function updateChartData(port, data) {
+            if (!portCharts[port]) return;
+
+            const dataPoints = portCharts[port].dataPoints;
+            const newTime = new Date(data.timestamp).getTime();
+
+            // 检测时间间隔，缺失秒用线性插值补齐（保证分钟平均准确）
+            if (dataPoints.length > 0) {
+                const lastPoint = dataPoints[dataPoints.length - 1];
+                const lastTime = new Date(lastPoint.timestamp).getTime();
+                const gap = (newTime - lastTime) / 1000;
+
+                if (gap > 1.5 && gap <= 30) {
+                    for (let i = 1; i < Math.floor(gap); i++) {
+                        const t = i / gap;
+                        const interpTime = new Date(lastTime + i * 1000).toISOString();
+                        const interpSpeed = lastPoint.speed + (data.wind_speed - lastPoint.speed) * t;
+                        dataPoints.push({
+                            time: new Date(interpTime).toLocaleTimeString(),
+                            speed: interpSpeed,
+                            timestamp: interpTime,
+                            interpolated: true
+                        });
+                    }
+                }
+            }
+
+            // 添加真实数据点
+            dataPoints.push({
+                time: new Date(data.timestamp).toLocaleTimeString(),
+                speed: data.wind_speed,
+                timestamp: data.timestamp,
+                interpolated: false
+            });
+
+            // 最多保留 2 小时原始数据
+            if (dataPoints.length > 8000) {
+                dataPoints.splice(0, dataPoints.length - 8000);
+            }
+
+            redrawChart();
+        }
+
+        // 重新绘制图表：按分钟平均风速显示
+        function redrawChart() {
+            const now = Date.now();
+            const cutoffMs = selectedTimeRange * 60 * 1000;
+
+            // 对每个端口，按分钟分组并计算平均风速
+            const allKeys = new Set();
+            const portBuckets = {};
+
+            Object.keys(portCharts).forEach(p => {
+                const buckets = {};
+                portCharts[p].dataPoints.forEach(point => {
+                    const pt = new Date(point.timestamp).getTime();
+                    if (now - pt > cutoffMs) return;
+
+                    // 分钟键：HH:MM
+                    const d = new Date(point.timestamp);
+                    const key = d.getHours().toString().padStart(2, '0') + ':' +
+                                d.getMinutes().toString().padStart(2, '0');
+
+                    if (!buckets[key]) buckets[key] = { sum: 0, count: 0 };
+                    buckets[key].sum += point.speed;
+                    buckets[key].count++;
+                    allKeys.add(key);
+                });
+                portBuckets[p] = buckets;
+            });
+
+            // 排序分钟标签
+            const sortedKeys = Array.from(allKeys).sort();
+            windSpeedChart.data.labels = sortedKeys;
+
+            // 给每个数据集赋平均值
+            Object.keys(portCharts).forEach(p => {
+                const dsIdx = portCharts[p].datasetIndex;
+                const buckets = portBuckets[p] || {};
+                const vals = sortedKeys.map(k => {
+                    const b = buckets[k];
+                    return b ? +(b.sum / b.count).toFixed(2) : null;
+                });
+                if (windSpeedChart.data.datasets[dsIdx]) {
+                    windSpeedChart.data.datasets[dsIdx].data = vals;
+                }
+            });
+
+            // 动态设置X轴范围：根据实际分钟数设置，但最小为所选时间范围的分钟数
+            const minPoints = selectedTimeRange; // 30/60/120 分钟
+            const actualPoints = sortedKeys.length;
+            windSpeedChart.options.scales.x.min = 0;
+            windSpeedChart.options.scales.x.max = Math.max(actualPoints, minPoints);
+
+            windSpeedChart.options.scales.y.max = yAxisMax;
+            windSpeedChart.update();
+        }
+        
+        // 监听页面卸载事件，安全断开连接但不退出程序
+        // P1-10: 使用 fetch + keepalive 替代 sendBeacon，更可靠且支持 JSON header
+        window.addEventListener('beforeunload', function(event) {
+            // 发送请求断开所有端口连接但不退出主程序
+            fetch('/api/stop_program', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({}),
+                keepalive: true
+            });
+        });
+
+        // Socket.IO事件监听
+        socket.on('wind_data', function(data) {
+            console.log('收到数据:', data);
+            
+            // 更新仪表盘
+            updateWindSpeedGauge(data.port, data.wind_speed);
+            updateWindDirectionGauge(data.port, data.wind_direction);
+            
+            // 更新温湿度气压
+            updateEnvironmentData(data.port, data.temperature, data.pressure, data.humidity);
+            
+            // 更新图表
+            updateChartData(data.port, data);
+        });
+        
+        // 监听程序停止事件
+        socket.on('program_stopped', function(data) {
+            console.log('程序已停止:', data.message);
+            alert('程序已停止，所有数据已安全保存');
+        });
+        
+        // 监听程序退出事件
+        socket.on('program_exit', function(data) {
+            console.log('程序即将退出:', data.message);
+            alert('程序即将退出');
+            // 尝试关闭窗口
+            window.close();
+        });
+        
+        // 更新系统状态
+        function updateSystemStatus() {
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    // 遍历所有已连接的端口（而非硬编码3个）
+                    Object.keys(portGauges).forEach(port => {
+                        const portStatus = document.getElementById(`port-status-${port}`);
+                        if (portStatus && data.hasOwnProperty(port)) {
+                            // 正确检查嵌套对象的connected属性，而非将对象作为布尔值
+                            if (data[port] && data[port].connected) {
+                                portStatus.className = 'port-status connected';
+                            } else {
+                                portStatus.className = 'port-status';
+                            }
+                        } else if (portStatus) {
+                            portStatus.className = 'port-status';
+                        }
+                    });
+                })
+                .catch(error => {
+                    console.error('获取系统状态失败:', error);
+                });
+        }
+        
+        // 保存数据
+        function saveData() {
+            fetch('/api/save')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert(data.message);
+                    } else {
+                        alert('错误: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('保存数据失败:', error);
+                    alert('保存数据失败: ' + error.message);
+                });
+        }
+        
+        // 退出程序
+        function exitProgram() {
+            fetch('/api/exit', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // 直接关闭窗口，无需提示
+                    window.open('', '_self', '');
+                    window.close();
+                    // 如果窗口关闭失败，显示简单信息
+                    document.body.innerHTML = '<h1>程序已退出</h1>';
+                }
+            })
+            .catch(error => {
+                // 即使fetch失败也直接关闭
+                window.open('', '_self', '');
+                window.close();
+                document.body.innerHTML = '<h1>程序已退出</h1>';
+            });
+        }
+        
+        // 编辑端口名称
+        function editPortName(port) {
+            const titleElement = document.getElementById(`port-title-${port}`);
+            const currentName = titleElement.textContent;
+            
+            // 检查是否已经在编辑状态
+            if (titleElement.querySelector('input')) {
+                return; // 已经在编辑状态，直接返回
+            }
+            
+            // 创建输入框
+            const inputElement = document.createElement('input');
+            inputElement.type = 'text';
+            inputElement.className = 'port-name-input';
+            inputElement.value = currentName;
+            inputElement.id = `port-input-${port}`;
+            
+            // 创建保存按钮
+            const saveButton = document.createElement('button');
+            saveButton.textContent = '✓';
+            saveButton.className = 'save-port-name';
+            saveButton.onclick = function(e) {
+                e.stopPropagation();
+                savePortName(port);
+            };
+            
+            // 创建取消按钮
+            const cancelButton = document.createElement('button');
+            cancelButton.textContent = '✗';
+            cancelButton.className = 'cancel-port-name';
+            cancelButton.onclick = function(e) {
+                e.stopPropagation();
+                cancelEditPortName(port);
+            };
+            
+            // 清空标题元素并添加输入元素和按钮
+            titleElement.innerHTML = '';
+            titleElement.appendChild(inputElement);
+            titleElement.appendChild(saveButton);
+            titleElement.appendChild(cancelButton);
+            
+            // 聚焦到输入框
+            inputElement.focus();
+            
+            // 添加回车键保存支持
+            inputElement.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    savePortName(port);
+                }
+            });
+            
+            // 添加ESC键取消支持
+            inputElement.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') {
+                    cancelEditPortName(port);
+                }
+            });
+            
+            // 添加失去焦点时自动保存
+            const blurHandler = function() {
+                savePortName(port);
+            };
+            inputElement._blurHandler = blurHandler;
+            inputElement.addEventListener('blur', blurHandler);
+        }
+        
+        // 保存端口名称
+        function savePortName(port) {
+            const inputElement = document.getElementById(`port-input-${port}`);
+            // 防止重复调用（blur+click/enter均会触发），输入框已移除说明已保存
+            if (!inputElement) return;
+            const newName = inputElement.value.trim() || `端口 ${port}`;
+
+            // 先移除blur监听器，防止click保存后blur再次触发
+            inputElement.removeEventListener('blur', inputElement._blurHandler);
+
+            // 保存自定义名称到内存和localStorage
+            portCustomNames[port] = newName;
+            localStorage.setItem('portCustomNames', JSON.stringify(portCustomNames));
+
+            // 更新显示名称
+            const titleElement = document.getElementById(`port-title-${port}`);
+            titleElement.textContent = newName;
+
+            // 更新图表中的标签
+            if (portCharts[port]) {
+                const datasetIndex = portCharts[port].datasetIndex;
+                if (windSpeedChart.data.datasets[datasetIndex]) {
+                    windSpeedChart.data.datasets[datasetIndex].label = newName;
+                    portCharts[port].currentLabel = newName;
+                    windSpeedChart.update();
+                }
+            }
+
+            // 更新控制区域的备注信息
+            updatePortControlRemark(port, newName);
+            
+            // 发送自定义名称到后端
+            fetch('/api/set_port_name', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    port: port,
+                    custom_name: newName
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (!data.success) {
+                    console.error('设置端口自定义名称失败:', data.message);
+                }
+            })
+            .catch(error => {
+                console.error('设置端口自定义名称时出错:', error);
+            });
+        }
+        
+        // 取消编辑端口名称
+        function cancelEditPortName(port) {
+            const inputElement = document.getElementById(`port-input-${port}`);
+            // 移除blur监听器，防止cancel后blur再次触发savePortName
+            if (inputElement && inputElement._blurHandler) {
+                inputElement.removeEventListener('blur', inputElement._blurHandler);
+            }
+
+            const titleElement = document.getElementById(`port-title-${port}`);
+            // 恢复之前的自定义名称（而非总是恢复为默认名）
+            const previousName = portCustomNames[port] || `端口 ${port}`;
+            titleElement.textContent = previousName;
+
+            // 更新图表中的标签
+            if (portCharts[port]) {
+                const datasetIndex = portCharts[port].datasetIndex;
+                if (windSpeedChart.data.datasets[datasetIndex]) {
+                    windSpeedChart.data.datasets[datasetIndex].label = previousName;
+                    portCharts[port].currentLabel = previousName;
+                    windSpeedChart.update();
+                }
+            }
+
+            // 更新控制区域的备注信息
+            updatePortControlRemark(port, previousName);
+            // 注意：取消编辑不应删除已有的自定义名称，仅取消本次编辑操作
+        }
+        
+        // 更新控制区域的备注信息
+        function updatePortControlRemark(port, customName) {
+            // 查找哪个控制组对应这个端口
+            for (let i = 1; i <= 3; i++) {
+                const portSelect = document.getElementById(`portSelect${i}`);
+                if (portSelect && portSelect.value === port) {
+                    // 查找或创建备注元素
+                    let remarkElement = document.getElementById(`portRemark${i}`);
+                    if (!remarkElement) {
+                        remarkElement = document.createElement('div');
+                        remarkElement.id = `portRemark${i}`;
+                        remarkElement.className = 'port-remark';
+                        remarkElement.style.fontSize = '12px';
+                        remarkElement.style.color = '#666';
+                        remarkElement.style.marginTop = '5px';
+                        portSelect.parentNode.appendChild(remarkElement);
+                    }
+                    
+                    // 更新备注文本
+                    remarkElement.textContent = `重命名为: ${customName}`;
+                    break;
+                }
+            }
+        }
+    </script>
+
+    <!-- 底部数据管理操作栏 -->
+    <div class="data-management-bar">
+        <div class="dm-section">
+            <h4>📊 数据文件管理</h4>
+            <div class="action-buttons">
+                <button onclick="listDataFiles()">📁 查看数据文件</button>
+                <button onclick="mergeAllData()">🔗 合并所有数据</button>
+                <button onclick="mergePortData()">🔗 合并指定端口</button>
+            </div>
+        </div>
+        <div class="dm-section">
+            <h4>📝 日志文件管理</h4>
+            <div class="action-buttons">
+                <button onclick="listLogFiles()">📁 查看日志文件</button>
+                <button onclick="mergeLogs()">🔗 合并日志</button>
+            </div>
+        </div>
+        <div class="dm-section">
+            <h4>🧹 清理功能</h4>
+            <div class="action-buttons">
+                <button onclick="cleanupOldFiles()">🗑️ 清理过期文件</button>
+                <input type="number" id="keepDays" value="30" min="1" max="365" style="width: 50px;"> 天
+            </div>
+        </div>
+    </div>
+
+    <!-- 数据文件列表弹窗 -->
+    <div id="dataFilesModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeDataFilesModal()">&times;</span>
+            <h2>📊 数据文件列表</h2>
+            <div id="dataFilesList"></div>
+        </div>
+    </div>
+
+    <!-- 日志文件列表弹窗 -->
+    <div id="logFilesModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeLogFilesModal()">&times;</span>
+            <h2>📝 日志文件列表</h2>
+            <div id="logFilesList"></div>
+        </div>
+    </div>
+
+    <style>
+        .data-management-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            padding: 15px;
+            margin-top: 30px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px;
+            color: white;
+        }
+        .dm-section {
+            flex: 1;
+            min-width: 250px;
+            padding: 10px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 8px;
+        }
+        .dm-section h4 {
+            margin: 0 0 10px 0;
+            font-size: 14px;
+            color: #fff;
+        }
+        .dm-section .action-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .dm-section button {
+            padding: 8px 16px;
+            font-size: 13px;
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        .dm-section button:hover {
+            background-color: #0b7dda;
+        }
+        .dm-section input {
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            text-align: center;
+        }
+
+        /* ��窗���式 */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+        .modal-content {
+            background-color: white;
+            margin: 5% auto;
+            padding: 20px;
+            border-radius: 10px;
+            width: 80%;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .close:hover {
+            color: #000;
+        }
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .file-item:hover {
+            background-color: #f9f9f9;
+        }
+        .file-info {
+            display: flex;
+            gap: 15px;
+        }
+        .file-info span {
+            color: #666;
+            font-size: 12px;
+        }
+    </style>
+
+    <script>
+        // ========== 数据文件管理 ==========
+        function listDataFiles() {
+            fetch('/api/data/list')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showDataFilesModal(data.files);
+                    } else {
+                        alert('获取数据文件列表失败: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    alert('请求失败: ' + error.message);
+                });
+        }
+
+        function showDataFilesModal(files) {
+            const modal = document.getElementById('dataFilesModal');
+            const listDiv = document.getElementById('dataFilesList');
+
+            if (!files || files.length === 0) {
+                listDiv.innerHTML = '<p>暂无数据文件</p>';
+            } else {
+                let html = '';
+                files.forEach(f => {
+                    html += `
+                        <div class="file-item">
+                            <div class="file-info">
+                                <strong>${f.name}</strong>
+                                <span>端口: ${f.port}</span>
+                                <span>日期: ${f.date}</span>
+                                <span>大小: ${(f.size / 1024).toFixed(1)} KB</span>
+                            </div>
+                        </div>
+                    `;
+                });
+                listDiv.innerHTML = html;
+            }
+
+            modal.style.display = 'block';
+        }
+
+        function closeDataFilesModal() {
+            document.getElementById('dataFilesModal').style.display = 'none';
+        }
+
+        function mergeAllData() {
+            if (!confirm('确定要合并所有端口的数据文件吗？')) return;
+
+            fetch('/api/data/merge', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    alert(data.message);
+                })
+                .catch(error => {
+                    alert('合并失败: ' + error.message);
+                });
+        }
+
+        function mergePortData() {
+            const port = prompt('请输入要合并数据的端口号（如 COM3）:');
+            if (!port) return;
+
+            fetch('/api/data/merge_port', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({port: port})
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert(data.message);
+            })
+            .catch(error => {
+                alert('合并失败: ' + error.message);
+            });
+        }
+
+        // ========== 日志文件管理 ==========
+        function listLogFiles() {
+            fetch('/api/logs/list')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showLogFilesModal(data.files);
+                    } else {
+                        alert('获取日志文件列表失败: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    alert('请求失败: ' + error.message);
+                });
+        }
+
+        function showLogFilesModal(files) {
+            const modal = document.getElementById('logFilesModal');
+            const listDiv = document.getElementById('logFilesList');
+
+            if (!files || files.length === 0) {
+                listDiv.innerHTML = '<p>暂无日志文件</p>';
+            } else {
+                let html = '';
+                files.forEach(f => {
+                    const date = new Date(f.modified * 1000).toLocaleString();
+                    html += `
+                        <div class="file-item">
+                            <div class="file-info">
+                                <strong>${f.name}</strong>
+                                <span>大小: ${(f.size / 1024).toFixed(1)} KB</span>
+                                <span>修改: ${date}</span>
+                            </div>
+                        </div>
+                    `;
+                });
+                listDiv.innerHTML = html;
+            }
+
+            modal.style.display = 'block';
+        }
+
+        function closeLogFilesModal() {
+            document.getElementById('logFilesModal').style.display = 'none';
+        }
+
+        function mergeLogs() {
+            if (!confirm('确定要合并所有日志文件吗？')) return;
+
+            fetch('/api/logs/merge', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    alert(data.message);
+                })
+                .catch(error => {
+                    alert('合并失败: ' + error.message);
+                });
+        }
+
+        // ========== 清理功能 ==========
+        function cleanupOldFiles() {
+            const keepDays = document.getElementById('keepDays').value;
+            if (!confirm(`确定要清理 ${keepDays} 天之前的文件吗？`)) return;
+
+            fetch('/api/cleanup', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({keep_days: parseInt(keepDays)})
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert(data.message);
+            })
+            .catch(error => {
+                alert('清理失败: ' + error.message);
+            });
+        }
+
+        // 点击弹窗外部关闭
+        window.onclick = function(event) {
+            if (event.target.classList.contains('modal')) {
+                event.target.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>

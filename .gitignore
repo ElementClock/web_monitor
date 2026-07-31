@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# 虚拟环境
+venv/
+.venv/
+
+# 运行时生成的数据/日志
+logs/
+wind_data/
+merged_log_*.log
+all_data_*.csv
+merged_*.csv
+
+# PyInstaller 打包产物
+build/
+dist/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
+# 测试/临时文件
+*.log
