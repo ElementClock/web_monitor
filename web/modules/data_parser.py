@@ -71,7 +71,9 @@ class DataParser:
                 logger.warning(f"端口 {self.port} 风向值异常: {wind_direction}°，已忽略该帧")
                 return None
         return WindData(
-            timestamp=datetime.now().isoformat(),
+            # 时间戳格式与设备本地 xlsx 记录一致（空格分隔、秒级），便于两套数据对齐对比。
+            # 系统时区为 UTC+8 北京时间，datetime.now() 即为北京时间，无需时区转换。
+            timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             port=self.port,
             wind_speed=wind_speed,
             wind_direction=wind_direction if wind_direction is not None else 0.0,

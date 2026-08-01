@@ -22,6 +22,26 @@ logger = logging.getLogger(__name__)
 CHINESE_FIELDNAMES = ['时间', '端口', '风速', '风向', '温度', '气压', '湿度']
 
 
+def _safe_port_name(port: str) -> str:
+    """获取安全的端口名称（用于文件名）"""
+    # 先替换冒号，再替换斜杠，最后处理COM前缀（只替换COM而非COM3的COM）
+    safe = port.replace(':', '_').replace('/', '_')
+    # 只在开头出现COM时替换，避免替换COM3中的COM
+    if safe.startswith('COM'):
+        safe = safe[3:]  # 移除COM前缀
+    return safe if safe else 'unknown'
+
+
+def _safe_float(value) -> Optional[float]:
+    """CSV 字段安全转浮点，失败返回 None"""
+    if value is None:
+        return None
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 class DataStorage:
     """数据存储类 - 支持按天分割的CSV文件存储"""
 
@@ -44,13 +64,8 @@ class DataStorage:
         logger.info(f"端口 {self.port} 数据存储初始化完成，数据目录: {self.data_dir}")
 
     def _get_safe_port_name(self, port: str) -> str:
-        """获取安全的端口名称（用于文件名）"""
-        # 先替换冒号，再替换斜杠，最后处理COM前缀（只替换COM而非COM3的COM）
-        safe = port.replace(':', '_').replace('/', '_')
-        # 只在开头出现COM时替换，避免替换COM3中的COM
-        if safe.startswith('COM'):
-            safe = safe[3:]  # 移除COM前缀
-        return safe if safe else 'unknown'
+        """获取安全的端口名称（用于文件名），委托模块级 _safe_port_name"""
+        return _safe_port_name(port)
 
     def _get_daily_filename(self) -> str:
         """获取当天的数据文件名"""
@@ -321,6 +336,74 @@ def merge_all_port_data(data_dir: str = 'wind_data', output_file: str = None) ->
     except Exception as e:
         logger.error(f"合并全量数据失败: {e}")
         return ""
+
+
+def read_history_data(port: str, minutes: int = 30, data_dir: str = 'wind_data',
+                      limit: int = 8000) -> List[dict]:
+    """读取指定端口近 minutes 分钟的历史数据（从按天分割的 CSV 文件）。
+
+    返回按时间升序排列的 dict 列表，字段与 WindData.to_dict 一致（不含 port）。
+    端口可能未连接，故为模块级函数，不依赖 reader/storage 实例。
+    """
+    try:
+        import glob
+        import codecs
+        from datetime import timedelta
+
+        safe = _safe_port_name(port)
+        if not os.path.exists(data_dir):
+            return []
+
+        files = sorted(glob.glob(os.path.join(data_dir, f"wind_data_{safe}_*.csv")))
+
+        now = datetime.now()
+        cutoff = now - timedelta(minutes=minutes)
+
+        # P2: 按文件名日期预过滤——只读 cutoff 日期当天及之后的文件，
+        # 避免逐行扫描过期文件（文件名 wind_data_<safe>_YYYYMMDD.csv）
+        cutoff_date = cutoff.strftime('%Y%m%d')
+        files = [f for f in files
+                 if os.path.basename(f).split('_')[-1].split('.')[0] >= cutoff_date]
+
+        points = []
+        for f in files:
+            try:
+                # utf-8-sig 自动剥离 BOM，与 merge 逻辑一致
+                with codecs.open(f, 'r', encoding='utf-8-sig') as infile:
+                    reader = csv.DictReader(infile)
+                    for row in reader:
+                        # 时间戳为当前写入格式 '%Y-%m-%d %H:%M:%S'（空格分隔、秒级）
+                        ts_raw = (row.get('时间') or '').strip()
+                        if not ts_raw:
+                            continue
+                        try:
+                            ts = datetime.strptime(ts_raw, '%Y-%m-%d %H:%M:%S')
+                        except ValueError:
+                            continue  # 无法解析的时间戳行跳过
+                        if ts < cutoff or ts > now:
+                            continue
+                        speed = _safe_float(row.get('风速'))
+                        if speed is None:
+                            continue
+                        points.append({
+                            'timestamp': ts.strftime('%Y-%m-%d %H:%M:%S'),
+                            'wind_speed': speed,
+                            'wind_direction': _safe_float(row.get('风向')),
+                            'temperature': _safe_float(row.get('温度')),
+                            'pressure': _safe_float(row.get('气压')),
+                            'humidity': _safe_float(row.get('湿度')),
+                        })
+            except Exception as e:
+                logger.warning(f"读取历史数据文件失败 {f}: {e}")
+
+        # 升序返回（前端 dataPoints 按时间追加，最新在末尾）
+        points.sort(key=lambda p: p['timestamp'])
+        # P3: 防御性上限——超过 limit 只保留最新 limit 行（默认与前端 8000 点上限一致）
+        return points[-limit:]
+    except Exception as e:
+        logger.error(f"读取历史数据失败: {e}")
+        logger.error(traceback.format_exc())
+        return []
 
 
 def cleanup_old_data(data_dir: str = 'wind_data', keep_days: int = 30):

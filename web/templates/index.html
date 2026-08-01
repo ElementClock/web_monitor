@@ -493,6 +493,8 @@
                     selectedTimeRange = parseInt(this.dataset.minutes);
                     // 重新绘制图表
                     redrawChart();
+                    // 重新为所有已连接端口拉取对应范围的历史数据
+                    Object.keys(portCharts).forEach(p => fetchHistory(p));
                 });
             });
             
@@ -688,6 +690,8 @@
                 console.log("连接端口响应:", data);
                 if (data.success) {
                     updateSystemStatus();
+                    // 连接成功后立即加载当前时间范围的历史数据（补充到实时点之上）
+                    fetchHistory(port);
                 } else if (data.code === 'already_connected') {
                     // 端口已连接，不清理仪表盘，只提示用户
                     alert('端口 ' + port + ' 已连接，无需重复添加');
@@ -1176,6 +1180,50 @@
                 humEl.textContent = humidity !== null && humidity !== undefined
                     ? humidity.toFixed(1) + ' %RH' : '-- %RH';
             }
+        }
+
+        // 每端口历史请求序号，防止快速切换时间范围时旧响应覆盖新响应（P1 竞态）
+        const historyReqSeq = {};
+        // 拉取指定端口近 selectedTimeRange 分钟的历史数据，整体替换图表数据（补充到实时点之上）
+        function fetchHistory(port) {
+            if (!portCharts[port]) return;
+            const minutes = selectedTimeRange;
+            const seq = (historyReqSeq[port] = (historyReqSeq[port] || 0) + 1);
+
+            fetch(`/api/data/history?port=${encodeURIComponent(port)}&minutes=${minutes}`)
+                .then(response => response.json())
+                .then(data => {
+                    // 序号不匹配 = 已有更新的请求 → 丢弃本次结果；中途断开也丢弃
+                    if (seq !== historyReqSeq[port] || !data.success || !portCharts[port]) return;
+
+                    const historyPoints = (data.points || []).map(p => ({
+                        time: new Date(p.timestamp).toLocaleTimeString(),
+                        speed: p.wind_speed,
+                        timestamp: p.timestamp,
+                        interpolated: false
+                    }));
+
+                    // 保留历史最新点之后已有的实时点（加载/重连间隙产生的数据，不影响实时显示）
+                    const historyEndMs = historyPoints.length
+                        ? new Date(historyPoints[historyPoints.length - 1].timestamp).getTime()
+                        : 0;
+                    const liveTail = (portCharts[port].dataPoints || []).filter(
+                        pt => new Date(pt.timestamp).getTime() > historyEndMs
+                    );
+
+                    // 整体替换 + 排序 + 去重 + 8000 上限（绕过 updateChartData 的插值逻辑）
+                    const merged = historyPoints.concat(liveTail).sort(
+                        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+                    );
+                    const deduped = merged.filter((pt, i) =>
+                        i === 0 || new Date(pt.timestamp).getTime() !== new Date(merged[i - 1].timestamp).getTime()
+                    );
+                    portCharts[port].dataPoints = deduped.slice(-8000);
+                    redrawChart();
+                })
+                .catch(error => {
+                    console.error('加载历史数据失败:', error);
+                });
         }
 
         // 更新图表数据 — 存原始秒数据，redrawChart 做分钟平均

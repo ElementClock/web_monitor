@@ -30,3 +30,5 @@ Thumbs.db
 
 # 测试/临时文件
 *.log
+*.xlsx
+*.csv

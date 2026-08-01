@@ -245,6 +245,53 @@ def test_hex_detection_whitespace():
     print("✓ hex 检测边界修复")
 
 
+# ---------- 测试 5: 历史数据读取（read_history_data） ----------
+def test_read_history_data():
+    import codecs
+    import csv as _csv
+    import os
+    import tempfile
+    from datetime import datetime, timedelta
+    from modules.data_storage import read_history_data
+
+    now = datetime.now()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # 构造含中文表头的 CSV（utf-8-sig，带 BOM），时间戳为当前格式 %Y-%m-%d %H:%M:%S
+        path = os.path.join(tmpdir, 'wind_data_3_20260801.csv')
+        with codecs.open(path, 'w', encoding='utf-8-sig') as f:
+            f.write('时间,端口,风速,风向,温度,气压,湿度\n')
+            # 窗口内（最近 10 分钟内）
+            f.write(f"{now.strftime('%Y-%m-%d %H:%M:%S')},COM3,3.2,180.0,25.0,1013.2,60.0\n")
+            f.write(f"{(now - timedelta(minutes=2)).strftime('%Y-%m-%d %H:%M:%S')},COM3,2.5,90.0,24.8,1013.0,61.0\n")
+            # 窗口外（60 分钟前，超出 minutes=10 窗口）
+            f.write(f"{(now - timedelta(minutes=60)).strftime('%Y-%m-%d %H:%M:%S')},COM3,9.9,0.0,24.0,1012.0,60.0\n")
+            # 缺风速字段 → 应被跳过
+            f.write(f"{now.strftime('%Y-%m-%d %H:%M:%S')},COM3,,180.0,25.0,1013.2,60.0\n")
+            # 无法解析的时间戳行 → 应被跳过
+            f.write("not-a-date,COM3,5.0,180.0,25.0,1013.2,60.0\n")
+
+        points = read_history_data('COM3', minutes=10, data_dir=tmpdir)
+
+        # 只返回窗口内的 2 行（缺风速行与坏时间戳行被跳过）
+        assert len(points) == 2, f"期望 2 行窗口内数据，实际 {len(points)}: {points}"
+        # 升序
+        times = [p['timestamp'] for p in points]
+        assert times == sorted(times), f"应升序返回: {times}"
+        # 字段完整性与值
+        assert points[0]['wind_speed'] == 2.5
+        assert points[1]['wind_speed'] == 3.2
+        assert points[1]['wind_direction'] == 180.0
+        assert points[1]['temperature'] == 25.0
+        assert points[1]['pressure'] == 1013.2
+        assert points[1]['humidity'] == 60.0
+        assert 'port' not in points[1], "返回字段不应包含 port"
+
+        # 无数据文件 → 空列表
+        assert read_history_data('COM999', minutes=10, data_dir=tmpdir) == []
+
+    print("✓ 历史数据读取（read_history_data）")
+
+
 if __name__ == "__main__":
     # Windows 控制台默认 GBK，强制 UTF-8 输出以支持 ✓ 等字符
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')

@@ -86,7 +86,33 @@ class WebRoutes:
                 if data:
                     latest_data[port] = data
             return jsonify(latest_data)
-        
+
+        @self.app.route('/api/data/history')
+        def get_history_data():
+            """获取指定端口近 N 分钟的历史数据（从每日 CSV 读取）"""
+            try:
+                port = request.args.get('port', '').strip()
+                if not port:
+                    return jsonify({'success': False, 'message': '端口参数缺失'})
+
+                try:
+                    minutes = int(request.args.get('minutes', 30))
+                except (TypeError, ValueError):
+                    minutes = 30
+                minutes = max(30, min(minutes, 1440))  # 下限30，上限24h 防超大载荷
+
+                from .data_storage import read_history_data
+                points = read_history_data(port, minutes)
+                return jsonify({
+                    'success': True,
+                    'port': port,
+                    'minutes': minutes,
+                    'points': points,  # 升序，字段: timestamp/wind_speed/wind_direction/temperature/pressure/humidity
+                })
+            except Exception as e:
+                logger.error(f"获取历史数据失败: {e}")
+                return jsonify({'success': False, 'message': str(e)})
+
         @self.app.route('/api/add_port', methods=['POST'])
         def add_port():
             try:
