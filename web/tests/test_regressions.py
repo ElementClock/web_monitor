@@ -257,7 +257,9 @@ def test_read_history_data():
     now = datetime.now()
     with tempfile.TemporaryDirectory() as tmpdir:
         # 构造含中文表头的 CSV（utf-8-sig，带 BOM），时间戳为当前格式 %Y-%m-%d %H:%M:%S
-        path = os.path.join(tmpdir, 'wind_data_3_20260801.csv')
+        # P3-7: 文件名日期须用动态 today（此前硬编码 20260801，运行日期晚于该日时
+        # read_history_data 的文件名预过滤会把它排除，导致测试恒失败）
+        path = os.path.join(tmpdir, f"wind_data_3_{now.strftime('%Y%m%d')}.csv")
         with codecs.open(path, 'w', encoding='utf-8-sig') as f:
             f.write('时间,端口,风速,风向,温度,气压,湿度\n')
             # 窗口内（最近 10 分钟内）

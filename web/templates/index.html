@@ -577,26 +577,8 @@
             });
         }
         
-        // 停止程序
-        function stopProgram() {
-            if (confirm('确定要停止程序吗？这将断开所有串口连接但不会退出主程序')) {
-                fetch('/api/stop_program', {
-                    method: 'POST'
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        alert('程序已停止');
-                    } else {
-                        alert('停止程序失败: ' + data.message);
-                    }
-                })
-                .catch(error => {
-                    console.error('停止程序失败:', error);
-                    alert('停止程序失败: ' + error.message);
-                });
-            }
-        }
+        // P3-6: 已移除 stopProgram()（无按钮引用、beforeunload 也不再调用）。
+        // /api/stop_program 端点保留，供未来显式调用。
         
         // 刷新可用串口列表
         function refreshAvailablePorts() {
@@ -1335,17 +1317,9 @@
             windSpeedChart.update();
         }
         
-        // 监听页面卸载事件，安全断开连接但不退出程序
-        // P1-10: 使用 fetch + keepalive 替代 sendBeacon，更可靠且支持 JSON header
-        window.addEventListener('beforeunload', function(event) {
-            // 发送请求断开所有端口连接但不退出主程序
-            fetch('/api/stop_program', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({}),
-                keepalive: true
-            });
-        });
+        // P3-6: 已移除页面卸载自动断开（beforeunload → /api/stop_program）。
+        // 原逻辑让 F5 刷新就断开所有串口，与程序常驻架构冲突（关浏览器 ≠ 退出程序，
+        // 串口由程序持续持有）。停止监控请点「退出程序」。
 
         // Socket.IO事件监听
         socket.on('wind_data', function(data) {

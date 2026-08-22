@@ -227,6 +227,48 @@ def test_combined_fragmented():
     print("✓ 持续拥塞下的多帧重组成功")
 
 
+def test_split_cr_line_frame():
+    """场景10: 纯 \r 定界帧分片到达（此前只识别 \n，会积压到超限被丢弃）"""
+    r = make_reader()
+    r.data_buffer += "12.3 045 001.0 1013.2 55"
+    with r._buffer_lock:
+        r._reassemble_frames()
+    assert r.data_buffer == "12.3 045 001.0 1013.2 55", "未到行尾(\r)的帧应留在缓冲区"
+    r.data_buffer += " 66 000 0000.0 CE*3B\r"
+    with r._buffer_lock:
+        r._reassemble_frames()
+    assert r.data_buffer == ""
+    assert len(r.storage.data_buffer) == 1
+    assert r.storage.data_buffer[0].wind_speed == 12.3
+    print("✓ 纯 \\r 定界分片重组成功")
+
+
+def test_crlf_and_cr_mixed():
+    """场景11: \r\n 与 \r 混合定界，不应因 \r\n 连排产生空帧计数"""
+    r = make_reader()
+    r.data_buffer += "11.1 001\r\n22.2 002\r"
+    with r._buffer_lock:
+        r._reassemble_frames()
+    assert r.data_buffer == ""
+    assert len(r.storage.data_buffer) == 2
+    assert r.storage.data_buffer[0].wind_speed == 11.1
+    assert r.storage.data_buffer[1].wind_speed == 22.2
+    assert r.stats['discarded_frames'] == 0, "\\r\\n 连排不应计入空帧丢弃"
+    print("✓ \\r\\n 与 \\r 混合定界无空帧")
+
+
+def test_hash_frame_with_crlf():
+    """场景12: #...# 帧带 \r\n 尾部（\r 优先切分，strip 已处理）"""
+    r = make_reader()
+    r.data_buffer += "#33.3 090 0000.0 0020.5 45#\r\n"
+    with r._buffer_lock:
+        r._reassemble_frames()
+    assert r.data_buffer == ""
+    assert len(r.storage.data_buffer) == 1
+    assert r.storage.data_buffer[0].wind_speed == 33.3
+    print("✓ #...# 帧带 \\r\\n 尾部重组成功")
+
+
 if __name__ == "__main__":
     # Windows 控制台默认 GBK，强制 UTF-8 输出以支持 ✓ 等字符
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')

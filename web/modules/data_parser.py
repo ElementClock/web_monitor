@@ -121,7 +121,7 @@ class DataParser:
             pressure = self._safe_float_conversion(parts[3]) if len(parts) > 3 else None
             humidity = self._safe_float_conversion(parts[5]) if len(parts) > 5 else None
 
-            logger.info(f"端口 {self.port} 成功解析数据 - 风速: {wind_speed}, 风向: {wind_direction}, 温度: {temperature}, 气压: {pressure}, 湿度: {humidity}")
+            logger.debug(f"端口 {self.port} 成功解析数据 - 风速: {wind_speed}, 风向: {wind_direction}, 温度: {temperature}, 气压: {pressure}, 湿度: {humidity}")
             return self._make_wind_data(wind_speed, wind_direction, temperature, pressure, humidity)
         except Exception as e:
             logger.error(f"解析端口 {self.port} 十六进制风速风向数据失败: {raw_data}, 错误: {e}")
@@ -188,18 +188,18 @@ class DataParser:
             
             # 首先尝试解析十六进制数据
             if self._is_hex_data(raw_data):
-                logger.info(f"端口 {self.port} 识别为十六进制格式数据")
+                logger.debug(f"端口 {self.port} 识别为十六进制格式数据")
                 ascii_data = self._convert_hex_to_ascii(raw_data)
                 parsed_data = self._parse_hex_wind_data(ascii_data)
                 if parsed_data:
-                    logger.info(f"端口 {self.port} 十六进制数据解析成功")
+                    logger.debug(f"端口 {self.port} 十六进制数据解析成功")
                     return parsed_data
                 else:
                     logger.warning(f"端口 {self.port} 十六进制数据解析失败")
 
             # 尝试JSON格式
             if raw_data.startswith('{') and raw_data.endswith('}'):
-                logger.info(f"端口 {self.port} 识别为JSON格式数据")
+                logger.debug(f"端口 {self.port} 识别为JSON格式数据")
                 try:
                     data = json.loads(raw_data)
                     wind_speed = self._safe_float_conversion(str(data.get('wind_speed', 0)))
@@ -209,14 +209,14 @@ class DataParser:
                         logger.warning(f"端口 {self.port} JSON数据中风速值无效: {data.get('wind_speed')}")
                         return None
                         
-                    logger.info(f"端口 {self.port} JSON格式数据解析成功 - 风速: {wind_speed}, 风向: {wind_direction}")
+                    logger.debug(f"端口 {self.port} JSON格式数据解析成功 - 风速: {wind_speed}, 风向: {wind_direction}")
                     return self._make_wind_data(wind_speed, wind_direction)
                 except json.JSONDecodeError as e:
                     logger.warning(f"端口 {self.port} JSON数据格式错误: {e}")
             
             # 尝试CSV格式
             elif ',' in raw_data:
-                logger.info(f"端口 {self.port} 识别为CSV格式数据")
+                logger.debug(f"端口 {self.port} 识别为CSV格式数据")
                 parts = raw_data.split(',')
                 wind_speed = self._safe_float_conversion(parts[0]) if len(parts) > 0 else None
                 wind_direction = self._safe_float_conversion(parts[1]) if len(parts) > 1 else None
@@ -230,12 +230,12 @@ class DataParser:
                 pressure = self._safe_float_conversion(parts[3]) if len(parts) > 3 else None
                 humidity = self._safe_float_conversion(parts[5]) if len(parts) > 5 else None
 
-                logger.info(f"端口 {self.port} CSV格式数据解析成功 - 风速: {wind_speed}, 风向：{wind_direction}, 温度：{temperature}, 气压：{pressure}, 湿度：{humidity}")
+                logger.debug(f"端口 {self.port} CSV格式数据解析成功 - 风速: {wind_speed}, 风向：{wind_direction}, 温度：{temperature}, 气压：{pressure}, 湿度：{humidity}")
                 return self._make_wind_data(wind_speed, wind_direction, temperature, pressure, humidity)
 
             # 尝试空格分隔格式
             elif ' ' in raw_data:
-                logger.info(f"端口 {self.port} 识别为空格分隔格式数据")
+                logger.debug(f"端口 {self.port} 识别为空格分隔格式数据")
 
                 # 处理以#开头和结尾的格式
                 data_to_parse = raw_data.strip()
@@ -259,19 +259,19 @@ class DataParser:
                 pressure = self._safe_float_conversion(parts[3]) if len(parts) > 3 else None
                 humidity = self._safe_float_conversion(parts[5]) if len(parts) > 5 else None
 
-                logger.info(f"端口 {self.port} 空格分隔格式数据解析成功 - 风速：{wind_speed}, 风向：{wind_direction}, 温度：{temperature}, 气压：{pressure}, 湿度：{humidity}")
+                logger.debug(f"端口 {self.port} 空格分隔格式数据解析成功 - 风速：{wind_speed}, 风向：{wind_direction}, 温度：{temperature}, 气压：{pressure}, 湿度：{humidity}")
                 return self._make_wind_data(wind_speed, wind_direction, temperature, pressure, humidity)
 
             # 尝试纯数字格式
             else:
-                logger.info(f"端口 {self.port} 识别为纯数字格式数据")
+                logger.debug(f"端口 {self.port} 识别为纯数字格式数据")
                 wind_speed = self._safe_float_conversion(raw_data)
                 if wind_speed is None:
                     logger.warning(f"端口 {self.port} 纯数字数据中风速值无效: {raw_data}")
                     return None
 
                 # P2-14: 改走统一构造出口，范围 + isfinite 校验（NaN/inf 一并拦截）
-                logger.info(f"端口 {self.port} 纯数字格式数据解析成功 - 风速: {wind_speed}")
+                logger.debug(f"端口 {self.port} 纯数字格式数据解析成功 - 风速: {wind_speed}")
                 return self._make_wind_data(wind_speed, 0.0)
                 
         except Exception as e:

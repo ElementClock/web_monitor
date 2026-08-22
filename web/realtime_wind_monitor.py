@@ -12,6 +12,7 @@ import threading
 import atexit
 import signal
 from datetime import datetime, timedelta
+from typing import List
 from modules.monitor_manager import WindMonitorManager
 
 
@@ -58,12 +59,15 @@ def setup_logging():
     _cleanup_old_logs(log_dir, keep_days=30)
 
 
-def _cleanup_old_logs(log_dir: str, keep_days: int = 30):
-    """清理超过保留天数的日志文件"""
+def _cleanup_old_logs(log_dir: str, keep_days: int = 30) -> List[str]:
+    """清理超过保留天数的日志文件
+    返回被删除的文件列表（供 /api/cleanup 反馈前端）
+    """
+    deleted = []
     try:
         import glob
         if not os.path.exists(log_dir):
-            return
+            return deleted
 
         cutoff_date = datetime.now() - timedelta(days=keep_days)
         log_pattern = os.path.join(log_dir, 'wind_monitor.log.*')
@@ -78,11 +82,13 @@ def _cleanup_old_logs(log_dir: str, keep_days: int = 30):
                         file_date = datetime.strptime(date_part, '%Y%m%d')
                         if file_date < cutoff_date:
                             os.remove(log_file)
+                            deleted.append(log_file)
                             logging.info(f"已删除过期日志: {log_file}")
             except Exception:
                 pass
     except Exception:
         pass
+    return deleted
 
 
 def merge_logs(log_dir: str = 'logs', output_file: str = None) -> str:

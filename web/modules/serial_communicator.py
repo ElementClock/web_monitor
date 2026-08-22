@@ -171,7 +171,8 @@ class SerialCommunicator:
                 if not decoded:
                     return None
 
-                logger.debug(f"从端口 {self.port} 读取到原始数据: {decoded!r}")
+                # P3-1: 不再逐帧记录成功读取的原始数据（磁盘写放大主源）。
+                # 解析失败时 parse_data/_handle_frame 的 WARNING 已带原始帧，排查能力不受损。
                 return decoded
         except serial.SerialTimeoutException as e:
             # 软超时：设备只是暂时无响应，不影响连接状态

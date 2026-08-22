@@ -408,7 +408,10 @@ def read_history_data(port: str, minutes: int = 30, data_dir: str = 'wind_data',
 
 def cleanup_old_data(data_dir: str = 'wind_data', keep_days: int = 30):
     """
-    清理超过保留天数的旧数据文件
+    清理超过保留天数的旧数据文件。
+
+    注意：合并产物（merged_*.csv / all_data_*.csv）不匹配 wind_data_* 命名，
+    刻意不纳入自动清理（数量少、由用户主动生成），如需删除请手动处理。
     """
     try:
         import glob
@@ -425,15 +428,29 @@ def cleanup_old_data(data_dir: str = 'wind_data', keep_days: int = 30):
         for file_path in glob.glob(pattern):
             try:
                 basename = os.path.basename(file_path)
-                # 提取日期: wind_data_COM3_20250614.csv
+                # 优先按文件名日期判断（wind_data_<port>_YYYYMMDD.csv），
+                # 保持"按数据归属日期保留"语义：断连端口的文件按其数据日期起算
+                file_date = None
                 parts = basename.replace('wind_data_', '').split('_')
                 if len(parts) >= 2:
                     date_str = parts[-1].replace('.csv', '')
                     if len(date_str) == 8 and date_str.isdigit():
-                        file_date = datetime.strptime(date_str, '%Y%m%d')
-                        if file_date < cutoff_date:
-                            os.remove(file_path)
-                            logger.info(f"已删除过期数据文件: {file_path}")
+                        try:
+                            file_date = datetime.strptime(date_str, '%Y%m%d')
+                        except ValueError:
+                            file_date = None
+
+                if file_date is None:
+                    # P3-4: 文件名日期无法解析（手工保存 wind_data_COM3_名字_时间戳.csv 等）
+                    # 回退按文件 mtime 判断，避免这类文件永不清理
+                    mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+                    if mtime < cutoff_date:
+                        os.remove(file_path)
+                        logger.info(f"已删除过期数据文件(按mtime): {file_path}")
+                else:
+                    if file_date < cutoff_date:
+                        os.remove(file_path)
+                        logger.info(f"已删除过期数据文件: {file_path}")
             except Exception:
                 pass
 

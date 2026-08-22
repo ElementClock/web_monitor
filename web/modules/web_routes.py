@@ -118,14 +118,27 @@ class WebRoutes:
             try:
                 data = request.get_json()
                 port = data.get('port')
-                # 获取可选的串口参数
-                baudrate = data.get('baudrate', 9600)
-                bytesize = data.get('bytesize', 8)
-                parity = data.get('parity', 'N')
-                stopbits = data.get('stopbits', 1)
 
                 if not port:
                     return jsonify({'success': False, 'message': '端口参数缺失'})
+
+                # P3-3: 类型转换 + 复用 SerialConfigValidator 校验串口参数，
+                # 非法值（字符串 baudrate、越界 parity/stopbits 等）在进入 pyserial 前被拦截
+                try:
+                    baudrate = int(data.get('baudrate', 9600))
+                    bytesize = int(data.get('bytesize', 8))
+                    stopbits = float(data.get('stopbits', 1))
+                except (TypeError, ValueError):
+                    return jsonify({'success': False, 'message': '串口参数格式错误，baudrate/bytesize/stopbits 必须为数字'})
+                parity = str(data.get('parity', 'N')).upper()
+
+                from .serial_config_manager import SerialConfig, SerialConfigValidator
+                is_valid, errors = SerialConfigValidator.validate_config(
+                    SerialConfig(port=port, baudrate=baudrate, bytesize=bytesize,
+                                 parity=parity, stopbits=stopbits)
+                )
+                if not is_valid:
+                    return jsonify({'success': False, 'message': '; '.join(errors)})
 
                 result = self.manager.add_reader(port, baudrate, bytesize, parity, stopbits)
                 if result is True:
@@ -361,29 +374,21 @@ class WebRoutes:
             """清理过期的日志和数据文件"""
             try:
                 data = request.get_json() or {}
-                keep_days = data.get('keep_days', 30)  # 默认保留30天
+                # P3-2: keep_days 类型转换 + 钳制 [1,365]。防止误传 0/负数/字符串
+                # 导致误删全部历史文件或接口 500。日志/数据两处清理共用此值。
+                try:
+                    keep_days = int(data.get('keep_days', 30))
+                except (TypeError, ValueError):
+                    keep_days = 30
+                keep_days = max(1, min(keep_days, 365))
 
                 cleaned_files = []
 
-                # 清理日志
+                # 清理日志（复用 _cleanup_old_logs，返回被删文件列表反馈前端）
                 try:
                     from realtime_wind_monitor import _cleanup_old_logs
-                    import glob
-                    log_dir = 'logs'
-                    if os.path.exists(log_dir):
-                        from datetime import datetime, timedelta
-                        cutoff = datetime.now() - timedelta(days=keep_days)
-                        for f in glob.glob(os.path.join(log_dir, 'wind_monitor.log.*')):
-                            try:
-                                basename = os.path.basename(f)
-                                date_part = basename.split('.')[-1]
-                                if len(date_part) == 8 and date_part.isdigit():
-                                    file_date = datetime.strptime(date_part, '%Y%m%d')
-                                    if file_date < cutoff:
-                                        os.remove(f)
-                                        cleaned_files.append(f'日志: {basename}')
-                            except Exception:
-                                pass
+                    for f in _cleanup_old_logs(log_dir='logs', keep_days=keep_days):
+                        cleaned_files.append(f'日志: {os.path.basename(f)}')
                 except Exception as e:
                     logger.warning(f"清理日志失败: {e}")
 

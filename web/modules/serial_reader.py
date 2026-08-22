@@ -253,8 +253,9 @@ class SerialWindDataReader:
                 if self.communicator.is_connected():
                     raw_data = self.communicator.read_line()
                     if raw_data:
-                        logger.debug(f"端口 {self.port} 读取到原始数据: {raw_data}")
                         # 将读取到的数据追加到帧缓冲区（加锁保护）
+                        # P3-1: 不再逐帧记录原始数据（serial_communicator 同改），
+                        # 失败路径 WARNING 已带原始帧
                         with self._buffer_lock:
                             self.data_buffer += raw_data
                             # 统计读取块数
@@ -317,11 +318,20 @@ class SerialWindDataReader:
         注意: 调用方必须已持有 _buffer_lock
         """
         while self.data_buffer:
-            # 优先按换行符定界（\n 优先，兼容纯 \r）
-            nl_index = self.data_buffer.find('\n')
-            if nl_index != -1:
-                frame = self.data_buffer[:nl_index]
-                self.data_buffer = self.data_buffer[nl_index + 1:]
+            # P3-5: 换行定界同时识别 \n 与 \r，取先出现的（\r\n 连排中 \r 在前）。
+            # 此前只 find('\n')，纯 \r 结尾的设备数据会一直积压到超限被丢弃。
+            i_nl = self.data_buffer.find('\n')
+            i_cr = self.data_buffer.find('\r')
+            if i_nl != -1 or i_cr != -1:
+                if i_nl == -1:
+                    idx = i_cr
+                elif i_cr == -1:
+                    idx = i_nl
+                else:
+                    idx = min(i_nl, i_cr)
+                frame = self.data_buffer[:idx]
+                # \r\n 连排时跳过余下的换行，避免下一轮产生空帧计数
+                self.data_buffer = self.data_buffer[idx + 1:].lstrip('\r\n')
                 self._handle_frame(frame)
                 continue
 
