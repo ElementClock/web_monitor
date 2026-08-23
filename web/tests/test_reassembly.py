@@ -83,7 +83,11 @@ def make_reader():
         'discarded_frames': 0,
         'buffer_truncations': 0,
         'last_reassembly': None,
+        'send_dropped': 0,
     }
+    # P3-8: 发送队列（采集路径仅入队，发送线程消费）
+    import queue
+    r._send_queue = queue.Queue(maxsize=2000)
     return r
 
 
@@ -267,6 +271,29 @@ def test_hash_frame_with_crlf():
     assert len(r.storage.data_buffer) == 1
     assert r.storage.data_buffer[0].wind_speed == 33.3
     print("✓ #...# 帧带 \\r\\n 尾部重组成功")
+
+
+def test_send_queue_enqueue_and_drop():
+    """P3-8: 发送队列非阻塞入队；队列满时丢弃新帧并计数（采集线程不阻塞）"""
+    import queue
+    from modules.data_model import WindData
+    r = make_reader()
+
+    # 正常入队：应放入 (port, obj)，不触发阻塞
+    obj = WindData(timestamp="t", port="TEST", wind_speed=1.0, wind_direction=0.0)
+    r._enqueue_emit(obj)
+    assert r._send_queue.qsize() == 1
+    port, got = r._send_queue.get()
+    assert port == "TEST" and got is obj
+
+    # 队列满：第 3 个被丢弃，send_dropped 计数递增
+    r._send_queue = queue.Queue(maxsize=2)
+    r._enqueue_emit(obj)
+    r._enqueue_emit(obj)
+    r._enqueue_emit(obj)  # 满，丢弃
+    assert r._send_queue.qsize() == 2
+    assert r.stats['send_dropped'] == 1
+    print("✓ 发送队列非阻塞入队/满则丢弃")
 
 
 if __name__ == "__main__":

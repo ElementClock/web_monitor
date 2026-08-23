@@ -302,9 +302,11 @@
 
     <script>
         // 初始化Socket.IO连接（禁用内置重连，使用自定义重连逻辑以便控制UI提示）
+        // P3-9: 重连次数改为无限——弱网环境持续波动时，5 次重试很快耗尽后页面
+        // 永久失去实时性（必须手动刷新）。无限重连配合指数退避（2s→10s）更适配无人值守。
         const socket = io({
             reconnection: true,
-            reconnectionAttempts: 5,
+            reconnectionAttempts: Infinity,
             reconnectionDelay: 2000,
             reconnectionDelayMax: 10000
         });
@@ -401,7 +403,9 @@
         // 监听初始连接失败
         socket.on('connect_error', function(error) {
             console.error('连接失败:', error);
-            updateConnectionStatus('disconnected');
+            // P3-9: 已改为无限重连，connect_error 后会继续自动重试，
+            // 显示"正在重连"而非"已断开请刷新"（否则弱网下横幅会误导用户去手动刷新）
+            updateConnectionStatus('reconnecting');
         });
 
         // 存储各端口的仪表盘元素和自定义名称

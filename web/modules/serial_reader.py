@@ -3,6 +3,7 @@
 负责管理单个串口的数据读取流程
 """
 
+import queue
 import serial
 import threading
 import time
@@ -62,8 +63,14 @@ class SerialWindDataReader:
             'discarded_frames': 0,     # 丢弃的异常帧数
             'buffer_truncations': 0,   # 缓冲区超限截断次数
             'last_reassembly': None,   # 最近一次重组时间(ISO字符串)
+            'send_dropped': 0,         # 发送队列满被丢弃的帧数（弱网/慢客户端）
         }
         self._stats_lock = threading.Lock()  # 统计字段线程安全锁
+        # P3-8: 前端推送发送队列——采集线程只入队（非阻塞），由独立发送线程消费并执行
+        # socketio.emit。慢客户端/弱网只阻塞发送线程，绝不阻塞采集。队列满则丢弃新帧并计数
+        # （数据已在 CSV 实时落盘，重连后由前端回补，不丢数据）。
+        self._send_queue = queue.Queue(maxsize=2000)
+        self._sender_thread = None  # 前端推送线程
         logger.info(f"串口数据读取器初始化完成，端口: {self.port}, 波特率: {self.baudrate}, 数据位: {self.bytesize}, 校验位: {self.parity}, 停止位: {self.stopbits}")
         
     def connect(self) -> bool:
@@ -108,6 +115,11 @@ class SerialWindDataReader:
         if self._reconnect_thread and self._reconnect_thread.is_alive():
             logger.info(f"等待端口 {self.port} 重连线程结束")
             self._reconnect_thread.join(timeout=2)
+
+        # P3-8: 等待前端推送线程结束（可能卡在 socketio.emit 上，超时后 daemon 兜底）
+        if getattr(self, '_sender_thread', None) and self._sender_thread.is_alive():
+            logger.info(f"等待端口 {self.port} 前端推送线程结束")
+            self._sender_thread.join(timeout=2)
 
         # 保存剩余数据并关闭文件
         self.storage.save_and_close_data_file()
@@ -201,6 +213,11 @@ class SerialWindDataReader:
         self._read_thread = threading.Thread(target=self._read_loop, daemon=True, name=f"ReadThread-{self.port}")
         self._read_thread.start()
         logger.info(f"端口 {self.port} 读取线程已启动")
+
+        # P3-8: 启动前端推送线程（消费发送队列，执行 socketio.emit，隔离网络阻塞）
+        self._sender_thread = threading.Thread(target=self._sender_loop, daemon=True, name=f"SenderThread-{self.port}")
+        self._sender_thread.start()
+        logger.info(f"端口 {self.port} 前端推送线程已启动")
     
     def _reconnect_loop(self):
         """重连循环，连接失败时指数退避（5s→30s），成功后恢复初始间隔
@@ -290,17 +307,46 @@ class SerialWindDataReader:
             self.storage.append_data(wind_data_obj)
             # 实时将数据写入文件
             self.storage.write_data_to_file(wind_data_obj)
-            # 通过回调推送数据
-            if self.on_data_callback:
-                self.on_data_callback(self.port, wind_data_obj)
-            else:
-                logger.warning(f"端口 {self.port} 无数据回调，无法推送数据")
+            # P3-8: 推送改为入队（非阻塞），由发送线程执行实际 socketio.emit，
+            # 网络阻塞不再卡住采集线程（此前在 _buffer_lock 内同步 emit）
+            self._enqueue_emit(wind_data_obj)
             # P2-4: 降为 DEBUG——原始数据已有 DEBUG 级日志，逐帧 INFO 造成磁盘写放大
             logger.debug(f"端口 {self.port} 数据处理完成: {parsed_data}")
             return True
         else:
             logger.warning(f"端口 {self.port} 数据解析失败: {frame}")
             return False
+
+    def _enqueue_emit(self, wind_data_obj):
+        """将前端推送任务入队（非阻塞）。
+        P3-8: 队列满则丢弃并计数——采集线程绝不被网络发送阻塞。
+        """
+        try:
+            self._send_queue.put((self.port, wind_data_obj), block=False)
+        except queue.Full:
+            with self._stats_lock:
+                self.stats['send_dropped'] += 1
+
+    def _sender_loop(self):
+        """前端推送线程：消费发送队列，执行 socketio.emit（网络 I/O 隔离在本线程）。
+        慢客户端/弱网只阻塞本线程；emit 异常被捕获后继续处理下一条。
+        """
+        logger.info(f"端口 {self.port} 前端推送循环开始")
+        while self.is_running and not self.stop_event.is_set():
+            try:
+                try:
+                    item = self._send_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                port, obj = item
+                if self.on_data_callback:
+                    self.on_data_callback(port, obj)
+                else:
+                    logger.warning(f"端口 {self.port} 无数据回调，无法推送数据")
+            except Exception as e:
+                logger.error(f"端口 {self.port} 前端推送失败: {e}")
+                logger.error(f"详细错误信息: {traceback.format_exc()}")
+        logger.info(f"端口 {self.port} 前端推送循环结束")
 
     def get_stats(self) -> Dict:
         """获取鲁棒性统计信息（线程安全）"""

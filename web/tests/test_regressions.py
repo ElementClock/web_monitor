@@ -153,6 +153,7 @@ def test_disconnect_idempotent():
     r.command_timer_thread = None
     r._read_thread = None
     r._reconnect_thread = None
+    r._sender_thread = None  # P3-8: 前端推送线程（未启动，disconnect 的 getattr 兜底）
 
     # 连续两次 disconnect 不应抛异常、不应重复关闭
     r.disconnect()
